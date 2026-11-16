@@ -40,4 +40,18 @@ export type RealtimeEnvelope = z.infer<typeof RealtimeEnvelope>;
 export const SubscribeRequest = z.object({ doctorId: Uuid });
 export type SubscribeRequest = z.infer<typeof SubscribeRequest>;
 
+/**
+ * Disponibilités en direct (tout utilisateur connecté, y compris les patients) :
+ * émettre `watch_availability` { doctorId } puis recevoir `slot.availability`.
+ * Aucune donnée personnelle : seulement « tel créneau vient d'être pris / libéré ».
+ */
+export const AVAILABILITY_EVENT = 'slot.availability';
+export const AvailabilityEvent = z.object({
+  doctorId: Uuid,
+  slotId: Uuid,
+  startsAt: IsoDateTime,
+  available: z.boolean(),
+});
+export type AvailabilityEvent = z.infer<typeof AvailabilityEvent>;
+
 export type SubscribeAck = { ok: true } | { ok: false; code: string; message: string };

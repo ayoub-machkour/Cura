@@ -9,3 +9,5 @@ export * from './schemas/appointments';
 export * from './schemas/queue';
 export * from './schemas/realtime';
 export * from './schemas/invitations';
+export * from './schemas/family';
+export * from './schemas/medical';

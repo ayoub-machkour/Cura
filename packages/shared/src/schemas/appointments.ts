@@ -15,8 +15,13 @@ export const BookAppointmentRequest = z.object({
   /** Jeton reçu lors de la pré-réservation du créneau. */
   holdToken: z.string().min(16).max(128).optional(),
   note: safeText(LIMITS.note.max).optional(),
-  /** Requis pour le personnel (réservation pour un patient), interdit pour un patient. */
+  /**
+   * Personnel : patient concerné (requis).
+   * Patient : soi-même par défaut, ou un proche rattaché à son compte famille.
+   */
   patientId: Uuid.optional(),
+  /** RDV de contrôle fixé par le cabinet : visite d'origine (personnel uniquement). */
+  followUpOfId: Uuid.optional(),
 });
 export type BookAppointmentRequest = z.infer<typeof BookAppointmentRequest>;
 
@@ -49,6 +54,8 @@ export const AppointmentDto = z.object({
   checkedInAt: IsoDateTime.nullable(),
   consultationStartedAt: IsoDateTime.nullable(),
   completedAt: IsoDateTime.nullable(),
+  /** Visite d'origine si ce RDV est un contrôle. */
+  followUpOfId: Uuid.nullable(),
 });
 export type AppointmentDto = z.infer<typeof AppointmentDto>;
 
@@ -63,6 +70,8 @@ export const AppointmentPage = page(AppointmentDto);
 
 export const ListMyAppointmentsQuery = PaginationQuery.extend({
   scope: z.enum(['upcoming', 'past']).default('upcoming'),
+  /** Filtrer sur un membre de la famille ; par défaut : soi-même ET tous ses proches. */
+  patientId: Uuid.optional(),
 });
 export type ListMyAppointmentsQuery = z.infer<typeof ListMyAppointmentsQuery>;
 

@@ -32,6 +32,13 @@ export const QueueEntryDto = z.object({
   isLate: z.boolean(),
   /** Patient venu sans rendez-vous. */
   isWalkIn: z.boolean(),
+  /**
+   * Priorité en salle d'attente (null hors salle d'attente) :
+   *  - `due`     : RDV dont l'heure est arrivée — passent en premier, par heure de RDV ;
+   *  - `walk_in` : sans RDV — passent dans les trous (absences, avance), par ordre d'arrivée ;
+   *  - `early`   : arrivés en avance — attendent leur heure.
+   */
+  group: z.enum(['due', 'walk_in', 'early']).nullable(),
 });
 export type QueueEntryDto = z.infer<typeof QueueEntryDto>;
 

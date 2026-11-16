@@ -28,7 +28,16 @@ export const LIMITS = {
   slotGenerationMaxDays: 92,
   pagination: { defaultLimit: 20, maxLimit: 100 },
   searchQuery: { min: 2, max: 100 },
+  /** Profil médical : listes de libellés courts (miroir de is_clean_text_list en SQL). */
+  medicalListItem: { min: 1, max: 120 },
+  medicalListMaxItems: 30,
+  medicalNotes: { max: 2000 },
+  /** Personnes à charge gérables par un même compte. */
+  maxDependents: 10,
 } as const;
+
+export const FAMILY_RELATIONSHIPS = ['child', 'parent', 'spouse', 'sibling', 'other'] as const;
+export const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'] as const;
 
 /**
  * Expressions régulières : la forme JS (Zod) et la forme PostgreSQL (CHECK) sont

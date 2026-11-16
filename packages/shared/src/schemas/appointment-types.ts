@@ -18,6 +18,8 @@ export const CreateAppointmentTypeRequest = z.object({
   colorHex: HexColor,
   bookableOnline: z.boolean().default(true),
   defaultPriceCents: PriceCents.default(0),
+  /** Soin propre à un médecin (son prix). Absent = motif commun au cabinet. Imposé pour un médecin connecté. */
+  doctorId: Uuid.optional(),
 });
 export type CreateAppointmentTypeRequest = z.infer<typeof CreateAppointmentTypeRequest>;
 
@@ -43,7 +45,12 @@ export const AppointmentTypeDto = z.object({
   bookableOnline: z.boolean(),
   defaultPriceCents: z.number().int(),
   isActive: z.boolean(),
+  /** null = motif commun au cabinet. */
+  doctorId: Uuid.nullable(),
 });
 export type AppointmentTypeDto = z.infer<typeof AppointmentTypeDto>;
 
 export const AppointmentTypeList = z.object({ data: z.array(AppointmentTypeDto) });
+
+/** Soins proposés par un médecin (ses soins + les motifs communs). */
+export const ListAppointmentTypesQuery = z.object({ doctorId: Uuid.optional() });
