@@ -1,0 +1,102 @@
+# =============================================================================
+# Cura — PRODUCTION
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# - Base cura_prod isolée (volume dédié), aucun port de base/Redis exposé.
+# - Seul Nginx est joignable (80 → redirection, 443 TLS).
+# - Conteneurs durcis : système de fichiers en lecture seule, aucune capability, pas d'escalade.
+# =============================================================================
+name: cura-prod
+
+x-hardening: &hardening
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  tmpfs: [/tmp]
+
+x-api-env: &api-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_PRETTY: "false"
+  DATABASE_URL: ${DATABASE_URL:-postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}}
+  DATABASE_SSL: ${DATABASE_SSL:-false}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  MIGRATIONS_DIR: /app/migrations
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET requis}
+  ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-900}
+  REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+  COOKIE_SECURE: "true"
+  COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+  CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS requis}
+  TRUST_PROXY_HOPS: "1"
+  SWAGGER_ENABLED: "false"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?requis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?requis}
+      POSTGRES_DB: ${POSTGRES_DB:-cura_prod}
+    volumes: [pgdata_prod:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: always
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?requis}", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    volumes: [redisdata_prod:/data]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    security_opt: ["no-new-privileges:true"]
+
+  migrate:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    image: cura-api:${API_VERSION:-latest}
+    command: ["node", "dist/migrate.js", "up"]
+    environment: *api-env
+    depends_on:
+      postgres: { condition: service_healthy }
+    <<: *hardening
+
+  api:
+    image: cura-api:${API_VERSION:-latest}
+    restart: always
+    environment: *api-env
+    expose: ["3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 512M }
+    <<: *hardening
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: always
+    ports: ["80:80", "443:443"]
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?SERVER_NAME requis}
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/templates/prod.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  pgdata_prod:
+  redisdata_prod:
