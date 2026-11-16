@@ -25,6 +25,11 @@ import { DoctorsRepository } from './modules/doctors/doctors.repository';
 import { DoctorsService } from './modules/doctors/doctors.service';
 import { PatientsRepository } from './modules/patients/patients.repository';
 import { PatientsService } from './modules/patients/patients.service';
+import { FamilyRepository } from './modules/family/family.repository';
+import { FamilyService } from './modules/family/family.service';
+import { PatientAccess } from './modules/family/patient-access';
+import { MedicalRepository } from './modules/medical/medical.repository';
+import { MedicalService } from './modules/medical/medical.service';
 import { OnboardingRepository } from './modules/onboarding/onboarding.repository';
 import { OnboardingService } from './modules/onboarding/onboarding.service';
 import { QueueRepository } from './modules/queue/queue.repository';
@@ -58,6 +63,11 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
   const queueRepo = new QueueRepository(pool);
   const outboxRepo = new OutboxRepository(pool);
   const onboardingRepo = new OnboardingRepository(pool);
+  const familyRepo = new FamilyRepository(pool);
+  const medicalRepo = new MedicalRepository(pool);
+
+  // Règle d'accès unique (patient : soi + proches ; médecin : son agenda ; secrétariat/admin : tout).
+  const access = new PatientAccess(familyRepo);
 
   // Sécurité
   const hasher = overrides.hasher ?? new ScryptPasswordHasher();
@@ -97,6 +107,7 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
       slots: slotsRepo,
       types: typesRepo,
       holds,
+      access,
       clock,
       logger: logger.child({ module: 'booking' }),
       config: {
@@ -112,10 +123,13 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
       appointments: bookingRepo,
       doctors: doctorsRepo,
       types: typesRepo,
+      access,
       clock,
       logger: logger.child({ module: 'visits' }),
     }),
-    queue: new QueueService(queueRepo, clock),
+    queue: new QueueService(queueRepo, clock, access),
+    family: new FamilyService({ tx, family: familyRepo, patients: patientsRepo, users: authRepo, logger: logger.child({ module: 'family' }) }),
+    medical: new MedicalService({ tx, repo: medicalRepo, access, logger: logger.child({ module: 'medical' }) }),
   };
   // Services qui dépendent d'autres services.
   const services = {
@@ -123,6 +137,8 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
     onboarding: new OnboardingService({
       tx,
       onboarding: onboardingRepo,
+      family: familyRepo,
+      patients: patientsRepo,
       users: authRepo,
       auth: coreServices.auth,
       hasher,
@@ -139,6 +155,7 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
     accessTokens,
     tx,
     clock,
+    access,
     repositories: { auth: authRepo, patients: patientsRepo, outbox: outboxRepo },
     hasher,
     services,

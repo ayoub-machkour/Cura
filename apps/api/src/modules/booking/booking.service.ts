@@ -29,6 +29,7 @@ import type { AuthPrincipal } from '../../common/security/tokens';
 import type { TransactionManager } from '../../infra/db/transaction';
 import type { AppLogger } from '../../infra/logger';
 import type { AppointmentTypesRepository } from '../appointment-types/appointment-types.repository';
+import type { PatientAccess } from '../family/patient-access';
 import type { SlotsRepository } from '../slots/slots.repository';
 import { toSlotDto } from '../slots/slots.service';
 import { DuplicateIdempotencyKeyError, PatientTimeConflictError, SlotUnavailableError } from './booking.errors';
@@ -52,8 +53,10 @@ export interface BookCommand {
   source: BookingSourceValue;
   holdToken?: string;
   note?: string;
-  /** Utilisateur à l'origine de l'action (historique). Absent = action système. */
+  /** Utilisateur à l'origine de l'action (historique, propriétaire de la pré-réservation). Absent = action système. */
   actorUserId?: string;
+  /** RDV de contrôle : visite d'origine. */
+  followUpOfId?: string;
 }
 
 export interface BookingResult {
@@ -68,6 +71,7 @@ interface Deps {
   slots: SlotsRepository;
   types: AppointmentTypesRepository;
   holds: SlotHoldStore;
+  access: PatientAccess;
   clock: Clock;
   logger: AppLogger;
   config: BookingConfig;
@@ -87,6 +91,7 @@ export const toAppointmentDto = (a: AppointmentRecord): AppointmentDto => ({
   checkedInAt: a.checkedInAt?.toISOString() ?? null,
   consultationStartedAt: a.consultationStartedAt?.toISOString() ?? null,
   completedAt: a.completedAt?.toISOString() ?? null,
+  followUpOfId: a.followUpOfId,
 });
 
 /**
@@ -99,8 +104,11 @@ const CANCELLABLE_BY_STAFF = new Set(['scheduled', 'confirmed', 'checked_in']);
 export class BookingService {
   constructor(private readonly deps: Deps) {}
 
-  /** Traduit la requête HTTP + l'identité en commande métier (qui réserve pour qui). */
-  commandFor(principal: AuthPrincipal, body: BookAppointmentRequest): BookCommand {
+  /**
+   * Traduit la requête HTTP + l'identité en commande métier (qui réserve pour qui).
+   * Un patient réserve pour lui-même ou pour un proche rattaché à son compte famille.
+   */
+  async prepare(principal: AuthPrincipal, body: BookAppointmentRequest): Promise<BookCommand> {
     const base = {
       slotId: body.slotId,
       appointmentTypeId: body.appointmentTypeId,
@@ -111,13 +119,15 @@ export class BookingService {
     };
     if (principal.role === 'patient') {
       if (!principal.pid) throw new ForbiddenError('Aucun dossier patient lié à ce compte');
-      if (body.patientId && body.patientId !== principal.pid) {
-        throw new ForbiddenError('Un patient ne peut réserver que pour lui-même');
+      if (body.followUpOfId) throw new ForbiddenError('Seul le cabinet peut fixer un rendez-vous de contrôle');
+      const patientId = body.patientId ?? principal.pid;
+      if (!(await this.deps.access.canAccessPatient(principal, patientId))) {
+        throw new ForbiddenError('Vous pouvez réserver pour vous-même ou pour un proche ajouté à votre famille dans l’application.');
       }
-      return { ...base, patientId: principal.pid, source: 'mobile' };
+      return { ...base, patientId, source: 'mobile' };
     }
-    if (!body.patientId) throw new BusinessRuleError('PATIENT_REQUIRED', 'patientId est requis pour une réservation par le cabinet');
-    return { ...base, patientId: body.patientId, source: 'desk' };
+    if (!body.patientId) throw new BusinessRuleError('PATIENT_REQUIRED', 'Indiquez le patient pour lequel vous réservez.');
+    return { ...base, patientId: body.patientId, source: 'desk', followUpOfId: body.followUpOfId };
   }
 
   async book(cmd: BookCommand): Promise<BookingResult> {
@@ -145,6 +155,9 @@ export class BookingService {
 
           const type = await types.findById(cmd.appointmentTypeId, db);
           if (!type || !type.isActive) throw new NotFoundError('Motif');
+          if (type.doctorId !== null && type.doctorId !== slot.doctorId) {
+            throw new BusinessRuleError('TYPE_NOT_OFFERED', 'Ce soin n’est pas proposé par ce médecin. Choisissez un soin de sa liste.');
+          }
           if (cmd.source === 'mobile' && !type.bookableOnline) {
             throw new BusinessRuleError('TYPE_NOT_BOOKABLE_ONLINE', 'Ce motif ne peut pas être réservé en ligne.');
           }
@@ -156,15 +169,22 @@ export class BookingService {
           // Verrou acquis : ce contrôle voit l'état réellement commité.
           if (await slots.hasActiveAppointment(slot.id, db)) throw new SlotUnavailableError(slot.id, 'ALREADY_BOOKED');
 
-          if (!(await appointments.lockPatient(cmd.patientId, db))) throw new NotFoundError('Patient');
-          // Anti-accaparement : limite de RDV à venir pour les réservations en ligne (le secrétariat n'est pas limité).
+          const patient = await appointments.lockPatient(cmd.patientId, db);
+          if (!patient) throw new NotFoundError('Patient');
+          // Anti-accaparement : limite de RDV à venir par personne en ligne (le secrétariat n'est pas limité).
           if (cmd.source === 'mobile') {
             const upcoming = await appointments.countUpcomingActive(cmd.patientId, this.deps.clock.now(), db);
             if (upcoming >= config.maxActivePerPatient) {
               throw new BusinessRuleError(
                 'BOOKING_LIMIT_REACHED',
-                `Vous avez déjà ${upcoming} rendez-vous à venir (maximum ${config.maxActivePerPatient}). Annulez-en un ou contactez le cabinet.`,
+                `${patient.firstName} a déjà ${upcoming} rendez-vous à venir (maximum ${config.maxActivePerPatient}). Annulez-en un ou contactez le cabinet.`,
               );
+            }
+          }
+          if (cmd.followUpOfId) {
+            const origin = await appointments.findFollowUpOrigin(cmd.followUpOfId, db);
+            if (!origin || origin.patientId !== cmd.patientId || !['in_consultation', 'completed'].includes(origin.status)) {
+              throw new BusinessRuleError('INVALID_FOLLOW_UP', 'Un rendez-vous de contrôle doit faire suite à une consultation de ce même patient.');
             }
           }
 
@@ -179,6 +199,7 @@ export class BookingService {
               source: cmd.source,
               idempotencyKey: cmd.idempotencyKey,
               note: cmd.note,
+              followUpOfId: cmd.followUpOfId,
             },
             db,
           );
@@ -214,12 +235,13 @@ export class BookingService {
   }
 
   /** Pré-réservation posée quand le patient touche un créneau dans l'app. */
-  async hold(slotId: string, appointmentTypeId: string, patientId: string): Promise<SlotHoldResponse> {
+  async hold(slotId: string, appointmentTypeId: string, ownerUserId: string): Promise<SlotHoldResponse> {
     const slot = await this.deps.slots.findById(slotId);
     if (!slot) throw new NotFoundError('Créneau');
-    const hold = await this.deps.holds.acquire(slotId, patientId, this.deps.config.holdTtlSeconds * 1000);
+    // La pré-réservation appartient au COMPTE (ex. un parent qui choisit un créneau pour son enfant).
+    const hold = await this.deps.holds.acquire(slotId, ownerUserId, this.deps.config.holdTtlSeconds * 1000);
     if (!hold) {
-      const alternatives = await this.findAlternatives({ slotId, appointmentTypeId, patientId, source: 'mobile' });
+      const alternatives = await this.findAlternatives({ slotId, appointmentTypeId, ownerUserId, source: 'mobile' });
       throw new SlotUnavailableError(slotId, 'HELD_BY_OTHER', alternatives);
     }
     return { slotId, holdToken: hold.token, expiresAt: hold.expiresAt.toISOString() };
@@ -230,7 +252,7 @@ export class BookingService {
     const cancelled = await tx.run(async (db) => {
       const appt = await appointments.lockById(appointmentId, db);
       // Un patient qui vise le RDV d'un autre reçoit 404 (pas 403) : on ne révèle pas son existence.
-      if (!appt || (principal.role === 'patient' && appt.patientId !== principal.pid)) throw new NotFoundError('Rendez-vous');
+      if (!appt || !(await this.deps.access.canActOnAppointment(principal, appt))) throw new NotFoundError('Rendez-vous');
       const cancellable = principal.role === 'patient' ? CANCELLABLE_BY_PATIENT : CANCELLABLE_BY_STAFF;
       if (!cancellable.has(appt.status)) {
         throw new BusinessRuleError('NOT_CANCELLABLE', `Un rendez-vous au statut « ${appt.status} » ne peut pas être annulé`);
@@ -258,9 +280,12 @@ export class BookingService {
     return toAppointmentDto(cancelled);
   }
 
-  async listMine(patientId: string, query: ListMyAppointmentsQuery): Promise<Page<AppointmentDto>> {
-    const rows = await this.deps.appointments.listForPatient({
-      patientId,
+  /** RDV du titulaire ET de ses proches (ou d'un seul membre avec ?patientId=). */
+  async listMine(principal: AuthPrincipal, query: ListMyAppointmentsQuery): Promise<Page<AppointmentDto>> {
+    const managed = await this.deps.access.managedPatientIds(principal);
+    if (query.patientId && !managed.includes(query.patientId)) throw new NotFoundError('Membre de la famille');
+    const rows = await this.deps.appointments.listForPatients({
+      patientIds: query.patientId ? [query.patientId] : managed,
       scope: query.scope,
       now: this.deps.clock.now(),
       limit: query.limit,
@@ -297,7 +322,10 @@ export class BookingService {
 
     if (err instanceof SlotUnavailableError) {
       this.deps.logger.info({ event: 'appointment.conflict', slotId: cmd.slotId, reason: err.reason }, 'booking conflict');
-      throw err.withAlternatives(await this.findAlternatives(cmd));
+      throw err.withAlternatives(await this.findAlternatives(this.alternativesQuery(cmd)));
+    }
+    if (err instanceof PatientTimeConflictError) {
+      throw new PatientTimeConflictError((await this.deps.appointments.findPatientFirstName(cmd.patientId)) ?? undefined);
     }
     throw err;
   }
@@ -307,8 +335,8 @@ export class BookingService {
     if (cmd.source !== 'mobile') return;
     try {
       const holder = await this.deps.holds.getHolder(cmd.slotId);
-      if (holder && holder.ownerId !== cmd.patientId) {
-        throw new SlotUnavailableError(cmd.slotId, 'HELD_BY_OTHER').withAlternatives(await this.findAlternatives(cmd));
+      if (holder && holder.ownerId !== cmd.actorUserId) {
+        throw new SlotUnavailableError(cmd.slotId, 'HELD_BY_OTHER').withAlternatives(await this.findAlternatives(this.alternativesQuery(cmd)));
       }
     } catch (err) {
       if (err instanceof DomainError) throw err;
@@ -320,14 +348,18 @@ export class BookingService {
   private async releaseHoldQuietly(cmd: BookCommand): Promise<void> {
     if (!cmd.holdToken) return;
     try {
-      await this.deps.holds.release(cmd.slotId, cmd.patientId, cmd.holdToken);
+      if (cmd.actorUserId) await this.deps.holds.release(cmd.slotId, cmd.actorUserId, cmd.holdToken);
     } catch (err) {
       this.deps.logger.warn({ err, slotId: cmd.slotId }, 'slot hold release failed (TTL will clean up)');
     }
   }
 
   /** Créneaux libres les plus proches de celui demandé, chez le même médecin. */
-  async findAlternatives(cmd: Pick<BookCommand, 'slotId' | 'appointmentTypeId' | 'patientId' | 'source'>): Promise<SlotDto[]> {
+  private alternativesQuery(cmd: BookCommand) {
+    return { slotId: cmd.slotId, appointmentTypeId: cmd.appointmentTypeId, ownerUserId: cmd.actorUserId ?? '', source: cmd.source };
+  }
+
+  async findAlternatives(cmd: { slotId: string; appointmentTypeId: string; ownerUserId: string; source: BookingSourceValue }): Promise<SlotDto[]> {
     const { slots, types, holds, config, logger, clock } = this.deps;
     try {
       const [target, type] = await Promise.all([slots.findById(cmd.slotId), types.findById(cmd.appointmentTypeId)]);
@@ -343,7 +375,7 @@ export class BookingService {
         excludeSlotIds: [target.id],
         limit: config.alternativesCount * 3, // sur-échantillonnage, puis filtre des créneaux pré-réservés
       });
-      const heldIds = await holds.heldByOthers(candidates.map((s) => s.id), cmd.patientId).catch(() => new Set<string>());
+      const heldIds = await holds.heldByOthers(candidates.map((s) => s.id), cmd.ownerUserId).catch(() => new Set<string>());
 
       return candidates.filter((s) => !heldIds.has(s.id)).slice(0, config.alternativesCount).map(toSlotDto);
     } catch (err) {

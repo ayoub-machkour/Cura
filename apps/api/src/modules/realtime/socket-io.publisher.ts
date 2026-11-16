@@ -1,4 +1,4 @@
-import { RealtimeEnvelope } from '@cura/shared';
+import { AVAILABILITY_EVENT, RealtimeEnvelope } from '@cura/shared';
 import type { AppLogger } from '../../infra/logger';
 import type { EventPublisher } from './outbox.relay';
 import type { OutboxRecord } from './outbox.repository';
@@ -28,6 +28,17 @@ export class SocketIoPublisher implements EventPublisher {
     }
     const envelope = parsed.data;
     this.io.to(rooms.doctor(envelope.data.doctorId)).to(rooms.patient(envelope.data.patientId)).emit(envelope.type, envelope);
+
+    // Disponibilité d'un créneau : pris à la réservation, libéré à l'annulation. Sans donnée personnelle.
+    const { slotId, doctorId, startsAt } = envelope.data;
+    if (slotId && (envelope.type === 'appointment.booked' || envelope.type === 'appointment.cancelled')) {
+      this.io.to(rooms.availability(doctorId)).emit(AVAILABILITY_EVENT, {
+        doctorId,
+        slotId,
+        startsAt,
+        available: envelope.type === 'appointment.cancelled',
+      });
+    }
     return true;
   }
 }

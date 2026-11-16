@@ -12,6 +12,7 @@ import type { AppLogger } from '../../infra/logger';
 import type { AppointmentTypesRepository } from '../appointment-types/appointment-types.repository';
 import type { BookingRepository, LockedAppointment } from '../booking/booking.repository';
 import type { DoctorsRepository } from '../doctors/doctors.repository';
+import type { PatientAccess } from '../family/patient-access';
 import { toAppointmentDto } from '../booking/booking.service';
 import { checkTransition, TRANSITIONS, type VisitAction } from './visit-state-machine';
 
@@ -20,25 +21,9 @@ interface Deps {
   appointments: BookingRepository;
   doctors: DoctorsRepository;
   types: AppointmentTypesRepository;
+  access: PatientAccess;
   clock: Clock;
   logger: AppLogger;
-}
-
-/**
- * Périmètre de chaque rôle : un patient n'agit que sur SES rendez-vous, un médecin
- * sur ceux de SON agenda ; secrétariat et admin sur tous.
- * Hors périmètre → 404 (on ne révèle pas l'existence du rendez-vous).
- */
-export function canActOn(principal: AuthPrincipal, appt: { patientId: string; doctorId: string }): boolean {
-  switch (principal.role) {
-    case 'patient':
-      return principal.pid !== null && appt.patientId === principal.pid;
-    case 'doctor':
-      return principal.did !== null && appt.doctorId === principal.did;
-    case 'secretary':
-    case 'admin':
-      return true;
-  }
 }
 
 export class VisitsService {
@@ -50,7 +35,8 @@ export class VisitsService {
 
     const { before, after } = await tx.run(async (db) => {
       const appt = await appointments.lockForTransition(appointmentId, now, db);
-      if (!appt || !canActOn(principal, appt)) throw new NotFoundError('Rendez-vous');
+      // Hors périmètre (patient : soi et ses proches ; médecin : son agenda) → 404, sans révéler l'existence.
+      if (!appt || !(await this.deps.access.canActOnAppointment(principal, appt))) throw new NotFoundError('Rendez-vous');
 
       this.assertVersion(appt, expectedVersion);
       const failure = checkTransition(action, { ...appt, now });
@@ -97,6 +83,9 @@ export class VisitsService {
       if (!(await doctors.findById(input.doctorId, db))) throw new NotFoundError('Médecin');
       const type = await types.findById(input.appointmentTypeId, db);
       if (!type || !type.isActive) throw new NotFoundError('Motif');
+      if (type.doctorId !== null && type.doctorId !== input.doctorId) {
+        throw new BusinessRuleError('TYPE_NOT_OFFERED', 'Ce soin n’est pas proposé par ce médecin. Choisissez un soin de sa liste.');
+      }
       if (!(await appointments.lockPatient(input.patientId, db))) throw new NotFoundError('Patient');
 
       const visit = await appointments.insertWalkIn(

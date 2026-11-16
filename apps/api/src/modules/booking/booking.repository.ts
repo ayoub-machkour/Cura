@@ -25,6 +25,7 @@ export interface AppointmentRecord {
   checkedInAt: Date | null;
   consultationStartedAt: Date | null;
   completedAt: Date | null;
+  followUpOfId: string | null;
 }
 
 /** RDV verrouillé pour une transition, avec les jours calendaires calculés dans le fuseau du médecin. */
@@ -45,6 +46,7 @@ export interface NewAppointment {
   source: BookingSourceValue;
   idempotencyKey: string;
   note?: string;
+  followUpOfId?: string;
 }
 
 export interface OutboxEvent {
@@ -59,7 +61,8 @@ const columns = (alias = '') => {
   return `
   ${a}id, ${a}doctor_id AS "doctorId", ${a}patient_id AS "patientId", ${a}appointment_type_id AS "appointmentTypeId",
   ${a}slot_id AS "slotId", ${a}starts_at AS "startsAt", ${a}ends_at AS "endsAt", ${a}status, ${a}source, ${a}version,
-  ${a}checked_in_at AS "checkedInAt", ${a}consultation_started_at AS "consultationStartedAt", ${a}completed_at AS "completedAt"`;
+  ${a}checked_in_at AS "checkedInAt", ${a}consultation_started_at AS "consultationStartedAt", ${a}completed_at AS "completedAt",
+  ${a}follow_up_of AS "followUpOfId"`;
 };
 const COLUMNS = columns();
 
@@ -87,8 +90,8 @@ export class BookingRepository {
     try {
       const { rows } = await tx.query<AppointmentRecord>(
         `INSERT INTO appointments
-           (doctor_id, patient_id, appointment_type_id, slot_id, starts_at, ends_at, source, idempotency_key, note)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           (doctor_id, patient_id, appointment_type_id, slot_id, starts_at, ends_at, source, idempotency_key, note, follow_up_of)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING ${COLUMNS}`,
         [
           input.doctorId,
@@ -100,6 +103,7 @@ export class BookingRepository {
           input.source,
           input.idempotencyKey,
           input.note ?? null,
+          input.followUpOfId ?? null,
         ],
       );
       return rows[0]!;
@@ -124,9 +128,26 @@ export class BookingRepository {
    * (sinon 5 requêtes parallèles compteraient toutes « 0 RDV » et dépasseraient la limite).
    * Ordre des verrous toujours créneau → patient : aucun interblocage possible.
    */
-  async lockPatient(patientId: string, tx: Db): Promise<boolean> {
-    const { rowCount } = await tx.query(`SELECT 1 FROM patients WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [patientId]);
-    return (rowCount ?? 0) > 0;
+  async lockPatient(patientId: string, tx: Db): Promise<{ firstName: string } | null> {
+    const { rows } = await tx.query<{ firstName: string }>(
+      `SELECT first_name AS "firstName" FROM patients WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [patientId],
+    );
+    return rows[0] ?? null;
+  }
+
+  async findPatientFirstName(patientId: string): Promise<string | null> {
+    const { rows } = await this.pool.query<{ firstName: string }>(`SELECT first_name AS "firstName" FROM patients WHERE id = $1`, [patientId]);
+    return rows[0]?.firstName ?? null;
+  }
+
+  /** Visite d'origine d'un RDV de contrôle. */
+  async findFollowUpOrigin(id: string, tx: Db): Promise<{ patientId: string; status: AppointmentStatus } | null> {
+    const { rows } = await tx.query<{ patientId: string; status: AppointmentStatus }>(
+      `SELECT patient_id AS "patientId", status FROM appointments WHERE id = $1`,
+      [id],
+    );
+    return rows[0] ?? null;
   }
 
   /** RDV à venir encore actifs (réservés ou confirmés) d'un patient. */
@@ -244,15 +265,16 @@ export class BookingRepository {
   }
 
   /** Keyset (starts_at, id) : à venir en ordre croissant, passés en ordre décroissant. */
-  async listForPatient(params: {
-    patientId: string;
+  /** RDV d'un ou plusieurs dossiers (compte famille). */
+  async listForPatients(params: {
+    patientIds: string[];
     scope: 'upcoming' | 'past';
     now: Date;
     limit: number;
     after?: readonly [string, string];
   }): Promise<AppointmentRecord[]> {
     const upcoming = params.scope === 'upcoming';
-    const values: unknown[] = [params.patientId, params.now, params.limit + 1];
+    const values: unknown[] = [params.patientIds, params.now, params.limit + 1];
     let keyset = '';
     if (params.after) {
       values.push(params.after[0], params.after[1]);
@@ -260,7 +282,7 @@ export class BookingRepository {
     }
     const { rows } = await this.pool.query<AppointmentRecord>(
       `SELECT ${COLUMNS} FROM appointments
-        WHERE patient_id = $1
+        WHERE patient_id = ANY($1::uuid[])
           AND starts_at ${upcoming ? '>=' : '<'} $2
           ${keyset}
         ORDER BY starts_at ${upcoming ? 'ASC' : 'DESC'}, id ${upcoming ? 'ASC' : 'DESC'}

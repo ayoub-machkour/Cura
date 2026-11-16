@@ -1,6 +1,6 @@
 import type { Pool } from 'pg';
 import type { CreateAppointmentTypeRequest, UpdateAppointmentTypeRequest } from '@cura/shared';
-import { ConflictError } from '../../common/errors';
+import { BusinessRuleError, ConflictError } from '../../common/errors';
 import { type Db, isConstraintViolation } from '../../infra/db/transaction';
 
 export interface AppointmentTypeRecord {
@@ -12,11 +12,14 @@ export interface AppointmentTypeRecord {
   bookableOnline: boolean;
   defaultPriceCents: number;
   isActive: boolean;
+  /** null = motif commun au cabinet ; sinon soin propre à ce médecin. */
+  doctorId: string | null;
 }
 
 const COLUMNS = `
   id, code, label, duration_minutes AS "durationMinutes", color_hex AS "colorHex",
-  bookable_online AS "bookableOnline", default_price_cents AS "defaultPriceCents", is_active AS "isActive"`;
+  bookable_online AS "bookableOnline", default_price_cents AS "defaultPriceCents", is_active AS "isActive",
+  doctor_id AS "doctorId"`;
 
 const UPDATABLE: Record<keyof UpdateAppointmentTypeRequest, string> = {
   label: 'label',
@@ -30,18 +33,21 @@ const UPDATABLE: Record<keyof UpdateAppointmentTypeRequest, string> = {
 export class AppointmentTypesRepository {
   constructor(private readonly pool: Pool) {}
 
-  async create(input: CreateAppointmentTypeRequest): Promise<AppointmentTypeRecord> {
+  async create(input: Omit<CreateAppointmentTypeRequest, 'doctorId'> & { doctorId: string | null }): Promise<AppointmentTypeRecord> {
     try {
       const { rows } = await this.pool.query<AppointmentTypeRecord>(
-        `INSERT INTO appointment_types (code, label, duration_minutes, color_hex, bookable_online, default_price_cents)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO appointment_types (code, label, duration_minutes, color_hex, bookable_online, default_price_cents, doctor_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING ${COLUMNS}`,
-        [input.code, input.label, input.durationMinutes, input.colorHex, input.bookableOnline, input.defaultPriceCents],
+        [input.code, input.label, input.durationMinutes, input.colorHex, input.bookableOnline, input.defaultPriceCents, input.doctorId],
       );
       return rows[0]!;
     } catch (err) {
       if (isConstraintViolation(err, 'uq_appointment_types_code')) {
-        throw new ConflictError('CODE_TAKEN', 'Ce code de motif existe déjà');
+        throw new ConflictError('CODE_TAKEN', 'Ce code de soin existe déjà pour ce médecin');
+      }
+      if (isConstraintViolation(err, 'appointment_types_doctor_id_fkey')) {
+        throw new BusinessRuleError('DOCTOR_NOT_FOUND', 'Le médecin indiqué n’existe pas');
       }
       throw err;
     }
@@ -62,14 +68,18 @@ export class AppointmentTypesRepository {
     return rows[0] ?? null;
   }
 
-  /** Liste courte (quelques dizaines de motifs) : pas de pagination nécessaire. */
-  async list(options: { onlyActive: boolean; onlyOnline: boolean }): Promise<AppointmentTypeRecord[]> {
+  /**
+   * Liste courte (quelques dizaines de soins) : pas de pagination nécessaire.
+   * Avec `doctorId` : les soins de ce médecin + les motifs communs au cabinet.
+   */
+  async list(options: { onlyActive: boolean; onlyOnline: boolean; doctorId?: string }): Promise<AppointmentTypeRecord[]> {
     const { rows } = await this.pool.query<AppointmentTypeRecord>(
       `SELECT ${COLUMNS} FROM appointment_types
         WHERE ($1::boolean = false OR is_active)
           AND ($2::boolean = false OR bookable_online)
-        ORDER BY label`,
-      [options.onlyActive, options.onlyOnline],
+          AND ($3::uuid IS NULL OR doctor_id IS NULL OR doctor_id = $3::uuid)
+        ORDER BY doctor_id NULLS FIRST, label`,
+      [options.onlyActive, options.onlyOnline, options.doctorId ?? null],
     );
     return rows;
   }

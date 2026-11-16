@@ -43,7 +43,7 @@ export const security = fp<SecurityOptions>(
         cb(null, false);
       },
       credentials: true,
-      methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['content-type', 'authorization', 'x-request-id', CSRF_HEADER],
       exposedHeaders: ['x-request-id', 'retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset'],
       maxAge: 600,

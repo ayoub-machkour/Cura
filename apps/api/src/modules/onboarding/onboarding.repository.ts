@@ -25,11 +25,6 @@ export class OnboardingRepository {
     return rows[0] ?? null;
   }
 
-  async patientHasAccount(patientId: string, db: Db = this.pool): Promise<boolean> {
-    const { rowCount } = await db.query(`SELECT 1 FROM users WHERE patient_id = $1`, [patientId]);
-    return (rowCount ?? 0) > 0;
-  }
-
   async revokeActive(patientId: string, db: Db): Promise<void> {
     await db.query(
       `UPDATE patient_invitations SET revoked_at = now() WHERE patient_id = $1 AND used_at IS NULL AND revoked_at IS NULL`,

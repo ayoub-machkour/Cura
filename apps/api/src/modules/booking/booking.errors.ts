@@ -34,8 +34,13 @@ export class SlotUnavailableError extends DomainError {
 export class PatientTimeConflictError extends DomainError {
   readonly code = 'PATIENT_TIME_CONFLICT';
   readonly httpStatus = 409;
-  constructor() {
-    super('Ce patient a déjà un rendez-vous sur cet horaire.');
+  /** Le prénom rend le message compréhensible quand un parent réserve pour plusieurs enfants. */
+  constructor(firstName?: string) {
+    super(
+      firstName
+        ? `${firstName} a déjà un rendez-vous sur cet horaire. Choisissez un autre créneau ou un autre membre de la famille.`
+        : 'Ce patient a déjà un rendez-vous sur cet horaire. Choisissez un autre créneau.',
+    );
   }
 }
 

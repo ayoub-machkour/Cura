@@ -16,32 +16,48 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import fp from 'fastify-plugin';
 import type { Redis } from 'ioredis';
 import { Server } from 'socket.io';
-import { REALTIME_PATH, type RealtimeEnvelope, type SubscribeAck, SubscribeRequest } from '@cura/shared';
+import {
+  AVAILABILITY_EVENT,
+  type AvailabilityEvent,
+  REALTIME_PATH,
+  type RealtimeEnvelope,
+  type SubscribeAck,
+  SubscribeRequest,
+} from '@cura/shared';
 import type { AccessTokenService, AuthPrincipal } from '../../common/security/tokens';
 import { COOKIE } from '../../http/cookies';
 
 export const rooms = {
   doctor: (doctorId: string) => `doctor:${doctorId}`,
   patient: (patientId: string) => `patient:${patientId}`,
+  /** Disponibilités d'un médecin : aucune donnée personnelle, ouvert à tout utilisateur connecté. */
+  availability: (doctorId: string) => `availability:${doctorId}`,
 };
 
 /** Nombre maximal de salles « médecin » suivies par une connexion. */
 export const MAX_SUBSCRIPTIONS = 50;
+/** Nombre maximal d'agendas dont une connexion suit les disponibilités. */
+export const MAX_AVAILABILITY_WATCH = 20;
 
 interface ClientToServerEvents {
   subscribe: (payload: unknown, ack?: (res: SubscribeAck) => void) => void;
   unsubscribe: (payload: unknown, ack?: (res: SubscribeAck) => void) => void;
+  watch_availability: (payload: unknown, ack?: (res: SubscribeAck) => void) => void;
+  unwatch_availability: (payload: unknown, ack?: (res: SubscribeAck) => void) => void;
 }
 
 type ServerToClientEvents = {
   [K in RealtimeEnvelope['type']]: (event: RealtimeEnvelope) => void;
 } & {
   'session.expired': () => void;
+  [AVAILABILITY_EVENT]: (event: AvailabilityEvent) => void;
 };
 
 interface SocketData {
   principal: AuthPrincipal;
   expiresAt: Date;
+  /** Patient : son dossier + ceux de ses proches (compte famille). */
+  patientIds: string[];
 }
 
 export type RealtimeServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
@@ -57,10 +73,12 @@ export interface RealtimeOptions {
   allowedOrigins: readonly string[];
   redis: Redis;
   keyPrefix: string;
+  /** Dossiers gérés par un compte patient (lui + ses proches). */
+  managedPatientIds: (principal: AuthPrincipal) => Promise<string[]>;
 }
 
 export const realtimeGateway = fp<RealtimeOptions>(
-  async (app, { tokens, allowedOrigins, redis, keyPrefix }) => {
+  async (app, { tokens, allowedOrigins, redis, keyPrefix, managedPatientIds }) => {
     const allowed = new Set(allowedOrigins);
     const log = app.log.child({ module: 'realtime' });
 
@@ -84,7 +102,7 @@ export const realtimeGateway = fp<RealtimeOptions>(
     const sub = redis.duplicate();
     io.adapter(createAdapter(pub, sub, { key: `${keyPrefix}socket.io` }));
 
-    io.use((socket, next) => {
+    io.use(async (socket, next) => {
       const cookieHeader = socket.request.headers.cookie;
       const cookies = cookieHeader ? app.parseCookie(cookieHeader) : {};
       const explicit = socket.handshake.auth?.token;
@@ -96,6 +114,12 @@ export const realtimeGateway = fp<RealtimeOptions>(
       }
       socket.data.principal = session.principal;
       socket.data.expiresAt = session.expiresAt;
+      try {
+        socket.data.patientIds = await managedPatientIds(session.principal);
+      } catch (err) {
+        log.error({ err }, 'realtime: failed to resolve family members');
+        return next(new Error('UNAVAILABLE'));
+      }
       next();
     });
 
@@ -110,7 +134,8 @@ export const realtimeGateway = fp<RealtimeOptions>(
       }, Math.max(socket.data.expiresAt.getTime() - Date.now(), 0));
       expiry.unref();
 
-      if (principal.role === 'patient' && principal.pid) void socket.join(rooms.patient(principal.pid));
+      // Patient : ses RDV et ceux de ses proches (un parent est notifié pour ses enfants).
+      for (const patientId of socket.data.patientIds) void socket.join(rooms.patient(patientId));
       if (principal.role === 'doctor' && principal.did) void socket.join(rooms.doctor(principal.did));
 
       const handle = (action: 'subscribe' | 'unsubscribe') => (payload: unknown, ack?: (res: SubscribeAck) => void) => {
@@ -140,6 +165,26 @@ export const realtimeGateway = fp<RealtimeOptions>(
       };
       socket.on('subscribe', handle('subscribe'));
       socket.on('unsubscribe', handle('unsubscribe'));
+
+      // Disponibilités en direct : tout utilisateur connecté (un patient voit un créneau se libérer).
+      const watch = (action: 'watch' | 'unwatch') => (payload: unknown, ack?: (res: SubscribeAck) => void) => {
+        const reply = (res: SubscribeAck) => (typeof ack === 'function' ? ack(res) : undefined);
+        const parsed = SubscribeRequest.safeParse(payload);
+        if (!parsed.success) return reply({ ok: false, code: 'VALIDATION_ERROR', message: 'doctorId (UUID) requis' });
+        const room = rooms.availability(parsed.data.doctorId);
+        if (action === 'watch') {
+          const current = [...socket.rooms].filter((r) => r.startsWith('availability:')).length;
+          if (!socket.rooms.has(room) && current >= MAX_AVAILABILITY_WATCH) {
+            return reply({ ok: false, code: 'TOO_MANY_SUBSCRIPTIONS', message: `Maximum ${MAX_AVAILABILITY_WATCH} agendas suivis` });
+          }
+          void socket.join(room);
+        } else {
+          void socket.leave(room);
+        }
+        reply({ ok: true });
+      };
+      socket.on('watch_availability', watch('watch'));
+      socket.on('unwatch_availability', watch('unwatch'));
 
       socket.on('disconnect', (reason) => {
         clearTimeout(expiry);

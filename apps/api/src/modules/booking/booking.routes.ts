@@ -14,7 +14,6 @@ import {
   SlotUnavailableResponse,
   STAFF_ROLES,
 } from '@cura/shared';
-import { ForbiddenError } from '../../common/errors';
 import { principalOf } from '../../http/auth-guard';
 import type { BookingService } from './booking.service';
 
@@ -32,11 +31,7 @@ export const bookingRoutes =
         body: HoldSlotRequest,
         response: { 200: SlotHoldResponse, 409: SlotUnavailableResponse, ...errors },
       },
-    }, async (req) => {
-      const { pid } = principalOf(req);
-      if (!pid) throw new ForbiddenError('Aucun dossier patient lié à ce compte');
-      return service.hold(req.params.slotId, req.body.appointmentTypeId, pid);
-    });
+    }, async (req) => service.hold(req.params.slotId, req.body.appointmentTypeId, principalOf(req).sub));
 
     app.post('/appointments', {
       onRequest: [app.authenticate, app.authorize('patient', 'secretary', 'admin', 'doctor')],
@@ -47,7 +42,7 @@ export const bookingRoutes =
         response: { 200: AppointmentDto, 201: AppointmentDto, 409: SlotUnavailableResponse.or(ErrorResponse), ...errors },
       },
     }, async (req, reply) => {
-      const result = await service.book(service.commandFor(principalOf(req), req.body));
+      const result = await service.book(await service.prepare(principalOf(req), req.body));
       return reply.code(result.replayed ? 200 : 201).send(result.appointment);
     });
 
@@ -66,15 +61,11 @@ export const bookingRoutes =
       onRequest: [app.authenticate, app.authorize('patient')],
       schema: {
         tags: ['appointments'],
-        summary: 'Mes rendez-vous (à venir / passés, paginé)',
+        summary: 'Mes rendez-vous et ceux de mes proches (à venir / passés, paginé)',
         querystring: ListMyAppointmentsQuery,
         response: { 200: AppointmentPage, ...errors },
       },
-    }, async (req) => {
-      const { pid } = principalOf(req);
-      if (!pid) throw new ForbiddenError('Aucun dossier patient lié à ce compte');
-      return service.listMine(pid, req.query);
-    });
+    }, async (req) => service.listMine(principalOf(req), req.query));
 
     app.get('/appointments', {
       onRequest: [app.authenticate, app.authorize(...STAFF_ROLES)],

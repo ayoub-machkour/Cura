@@ -17,6 +17,8 @@ import { bookingRoutes } from './modules/booking/booking.routes';
 import { doctorsRoutes } from './modules/doctors/doctors.routes';
 import { healthRoutes } from './modules/health/health.routes';
 import { patientsRoutes } from './modules/patients/patients.routes';
+import { familyRoutes } from './modules/family/family.routes';
+import { medicalRoutes } from './modules/medical/medical.routes';
 import { onboardingRoutes } from './modules/onboarding/onboarding.routes';
 import { queueRoutes } from './modules/queue/queue.routes';
 import { realtimeGateway } from './modules/realtime/realtime.gateway';
@@ -80,6 +82,7 @@ export async function buildApp(c: Container) {
     allowedOrigins: env.CORS_ORIGINS,
     redis: c.redis,
     keyPrefix: env.REDIS_KEY_PREFIX,
+    managedPatientIds: (principal) => c.access.managedPatientIds(principal),
   });
 
   await app.register(healthRoutes({ pool: c.pool, redis: c.redis }));
@@ -108,6 +111,8 @@ export async function buildApp(c: Container) {
       await v1.register(walkInRoutes(c.services.visits));
       await v1.register(queueRoutes(c.services.queue));
       await v1.register(onboardingRoutes(c.services.onboarding, cookieConfig, env.RATE_LIMIT_AUTH_MAX));
+      await v1.register(familyRoutes(c.services.family, c.services.onboarding));
+      await v1.register(medicalRoutes(c.services.medical));
     },
     { prefix: API_PREFIX },
   );
