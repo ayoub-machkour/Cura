@@ -6,3 +6,5 @@ export * from './schemas/doctors';
 export * from './schemas/appointment-types';
 export * from './schemas/slots';
 export * from './schemas/appointments';
+export * from './schemas/queue';
+export * from './schemas/realtime';

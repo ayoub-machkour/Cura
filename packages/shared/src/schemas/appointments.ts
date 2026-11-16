@@ -44,8 +44,20 @@ export const AppointmentDto = z.object({
   endsAt: IsoDateTime,
   status: AppointmentStatus,
   source: BookingSource,
+  /** Incrémenté à chaque changement : sert au verrouillage optimiste (expectedVersion). */
+  version: z.number().int().min(1),
+  checkedInAt: IsoDateTime.nullable(),
+  consultationStartedAt: IsoDateTime.nullable(),
+  completedAt: IsoDateTime.nullable(),
 });
 export type AppointmentDto = z.infer<typeof AppointmentDto>;
+
+/** Corps commun des transitions de statut. */
+export const AppointmentTransitionRequest = z.object({
+  /** Si fourni, la transition échoue (409 STALE_VERSION) quand le RDV a changé entre-temps. */
+  expectedVersion: z.number().int().min(1).optional(),
+});
+export type AppointmentTransitionRequest = z.infer<typeof AppointmentTransitionRequest>;
 
 export const AppointmentPage = page(AppointmentDto);
 
