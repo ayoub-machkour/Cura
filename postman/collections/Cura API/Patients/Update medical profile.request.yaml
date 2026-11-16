@@ -1,0 +1,22 @@
+$kind: http-request
+name: 'Update medical profile'
+description: 'Full replacement (lists are sent complete). Every change is audited (who, which fields, when).'
+method: PUT
+url: '{{base_url}}/patients/{{patient_id}}/medical-profile'
+order: 9000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "bloodType": "O+",
+      "allergies": ["Penicillin"],
+      "chronicConditions": ["Type 2 diabetes"],
+      "currentMedications": ["Metformin 850 mg twice daily"],
+      "pastSurgeries": [],
+      "emergencyContactName": "John Doe",
+      "emergencyContactPhone": "+212611223344",
+      "notes": "Fasting glucose < 1.26 g/L"
+    }

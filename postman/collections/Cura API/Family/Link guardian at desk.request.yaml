@@ -1,0 +1,15 @@
+$kind: http-request
+name: 'Link record to a family account (staff)'
+method: POST
+url: '{{base_url}}/patients/{{patient_id}}/guardians'
+order: 5000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "email": "patient@example.com",
+      "relationship": "child"
+    }

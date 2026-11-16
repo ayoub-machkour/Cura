@@ -53,6 +53,9 @@ variables:
   - key: invitation_code
     value: ''
     description: 'Set by Create app activation code, consumed by Claim account'
+  - key: dependent_id
+    value: ''
+    description: 'Relative managed by the family account (set by Family requests)'
   - key: hold_token
     value: ''
     description: 'Set by Hold slot, consumed by Book appointment'

@@ -1,0 +1,24 @@
+$kind: http-request
+name: 'Link a relative already followed (code from the desk)'
+method: POST
+url: '{{base_url}}/me/family/link'
+order: 3000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "code": "{{invitation_code}}",
+      "birthDate": "1948-02-20",
+      "relationship": "parent"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) {
+        pm.collectionVariables.set('dependent_id', pm.response.json().patient.id);
+        pm.collectionVariables.set('invitation_code', '');
+      }

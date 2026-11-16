@@ -137,9 +137,12 @@ Documentation interactive sur **`/docs`** (OpenAPI 3.1 générée depuis les sch
 | POST | `/api/v1/slots/:slotId/hold` (pré-réservation Redis) | patient |
 | POST | `/api/v1/appointments` (201 · 200 rejeu · 409 + alternatives) | patient, personnel |
 | POST | `/api/v1/appointments/:id/cancel` | propriétaire, personnel |
-| GET | `/api/v1/appointments/me` · `/api/v1/appointments` (agenda) | patient · personnel |
+| GET | `/api/v1/appointments/me` (soi + famille, `?patientId=`) · `/api/v1/appointments` (agenda) | patient · personnel |
 | POST | `/api/v1/appointments/:id/confirm` · `/check-in` · `/start` · `/complete` · `/no-show` | selon l’action (voir « File d’attente ») |
 | POST | `/api/v1/walk-ins` (patient sans RDV → salle d’attente) | secrétariat, admin, médecin (sa file) |
+| GET/POST | `/api/v1/me/family` · POST `/me/family/link` · DELETE `/me/family/:patientId` | patient (compte famille) |
+| POST/DELETE | `/api/v1/patients/:id/guardians[/:userId]` (rattachement au guichet) | personnel |
+| GET/PUT | `/api/v1/patients/:id/medical-profile` | patient (soi et ses proches), personnel |
 | POST | `/api/v1/patients/:id/invitations` (code d’activation de l’app) | personnel |
 | POST | `/api/v1/auth/claim` (activer son compte avec le code) | public |
 | GET | `/api/v1/queue?doctorId=` (file du jour) | personnel (médecin : sa file) |
@@ -187,7 +190,13 @@ La base garantit en plus :
 - **une seule consultation en cours par médecin** (index unique, testé en concurrence) ;
 - un historique `appointment_status_changes` **en ajout seul** (trigger).
 
-**File du jour.** `GET /api/v1/queue?doctorId=` renvoie la consultation en cours, la salle d'attente (premier arrivé, premier appelé, avec la position) et les patients attendus (retards signalés). Le patient obtient sa place avec `GET /appointments/:id/queue-position`.
+**File du jour.** `GET /api/v1/queue?doctorId=` renvoie la consultation en cours, la salle d'attente dans l'ordre d'appel conseillé (avec la position et le groupe) et les patients attendus (retards signalés). L'ordre suit la pratique des cabinets :
+
+1. `due` : patients sur RDV dont l'heure est arrivée, par heure de RDV ;
+2. `walk_in` : patients **sans RDV**, par ordre d'arrivée. Ils passent dans les trous (absences, retards), ce qui correspond à l'option « venez et attendez un désistement » proposée à l'accueil ;
+3. `early` : patients arrivés en avance, qui attendent leur heure.
+
+Le médecin reste libre d'appeler un autre patient. Le patient obtient sa place avec `GET /appointments/:id/queue-position`.
 
 **Temps réel.** Socket.io sur `/socket.io`, contrat dans [`realtime.ts`](packages/shared/src/schemas/realtime.ts) :
 - Authentification par le cookie httpOnly de session (ou `auth.token` pour un client natif). La connexion est coupée à l'expiration du jeton (événement `session.expired`).
@@ -204,7 +213,7 @@ séparées (`patients` ≠ `users`), ce qui permet de servir tout le monde.
 
 - **Patients sans smartphone ou âgés.** Le secrétariat crée le dossier et gère tout au guichet. Ces patients n'ont jamais besoin de l'app.
 - **Walk-in (sans rendez-vous).** `POST /api/v1/walk-ins` crée une visite **sans créneau**, directement en salle d'attente :
-  - elle s'intercale par ordre d'arrivée avec les patients sur RDV ;
+  - elle passe après les patients dont l'heure de RDV est arrivée, et avant ceux arrivés en avance (voir « File du jour ») ;
   - elle n'occupe pas l'agenda, car c'est la file qui la gère ;
   - la base garantit qu'un patient n'est **qu'une fois** en file (index unique) ;
   - un patient reparti sans consulter est clôturé par le personnel, et pourra revenir.
@@ -213,6 +222,24 @@ séparées (`patients` ≠ `users`), ce qui permet de servir tout le monde.
   - Code d'environ 40 bits, alphabet sans ambiguïté (pas de 0/O, 1/I/L), **stocké haché**, usage unique, expiration 7 jours, une seule invitation active par patient.
   - Blocage après 5 dates de naissance erronées. Même réponse pour un code inconnu ou une mauvaise date, donc pas d'énumération. Le code n'apparaît jamais dans les logs.
 - **Nouveau patient inconnu du cabinet.** Inscription libre dans l'app (`POST /auth/register`).
+
+## Scénarios réels couverts
+
+| Scénario | Comportement |
+|---|---|
+| **Nouveau patient** | inscription dans l'app, choix du médecin, du soin (prix affiché) et du créneau |
+| **Patient déjà suivi, contrôle fixé par le médecin** | le personnel réserve avec `followUpOfId` : le contrôle reste rattaché à la visite d'origine (même patient, visite réalisée) |
+| **Famille** (parent + enfants, enfant adulte + parent âgé) | un compte gère les dossiers de ses proches (10 au maximum). Chaque proche garde **son** dossier, ses RDV, son historique et son profil médical. Le titulaire réserve pour chacun (`patientId`), voit tous les RDV de la famille et reçoit leurs notifications en temps réel |
+| Même enfant sur deux créneaux qui se chevauchent | refusé : « Yasmine a déjà un rendez-vous sur cet horaire. Choisissez un autre créneau ou un autre membre de la famille. » |
+| Deux enfants sur le même créneau | le second reçoit les créneaux libres les plus proches |
+| Limite de RDV à venir | par personne, avec un message nominatif (« Yasmine a déjà 3 rendez-vous à venir… ») |
+| **Walk-in** | l'accueil propose de prendre un RDV, ou d'attendre un désistement (`POST /walk-ins`, groupe `walk_in`) |
+| **Annulation par le patient** | le créneau redevient réservable immédiatement. Les patients et le personnel qui consultent l'agenda le voient en direct (`watch_availability` → `slot.availability`, sans donnée personnelle) |
+| **Soins du médecin** | chaque médecin gère **ses** soins et leurs prix (`POST /appointment-types`), en plus des motifs communs du cabinet (ex. « Première consultation »). Un soin d'un autre médecin est refusé (`TYPE_NOT_OFFERED`) |
+| **Profil médical** | groupe sanguin, allergies, maladies chroniques, traitements en cours, opérations, contact d'urgence, notes. Renseigné par le patient (ou le parent) et par le cabinet. **Chaque modification est tracée** (champs, auteur, rôle, date), sans recopier les valeurs |
+| **Tout comptabilisé au cabinet** | une seule base : tout ce qui est fait dans l'app apparaît immédiatement au guichet. La caisse viendra s'y brancher |
+
+**Confidentialité :** comme demandé, la secrétaire a accès au profil médical. Le secret médical impose souvent de réserver les antécédents au médecin. La règle est centralisée dans [`patient-access.ts`](apps/api/src/modules/family/patient-access.ts) et dans les routes du module `medical`, donc la restreindre plus tard ne demande qu'une modification.
 
 **Anti-accaparement.** En ligne, un patient a au plus `BOOKING_MAX_ACTIVE_PER_PATIENT` RDV à venir (3 par défaut, sans limite pour le secrétariat). Les réservations d'un même patient sont sérialisées (verrou sur son dossier) : 5 réservations simultanées donnent exactement 3 RDV.
 

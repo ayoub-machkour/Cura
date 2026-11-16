@@ -1,0 +1,23 @@
+$kind: http-request
+name: 'Add a relative (new record)'
+method: POST
+url: '{{base_url}}/me/family'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "firstName": "Yasmine",
+      "lastName": "Doe",
+      "birthDate": "2016-05-10",
+      "sex": "F",
+      "relationship": "child"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) pm.collectionVariables.set('dependent_id', pm.response.json().patient.id);

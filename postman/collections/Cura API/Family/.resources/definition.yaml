@@ -1,0 +1,13 @@
+$kind: collection
+name: Family
+description: |-
+  Family accounts: one app account manages the records of relatives (children, elderly parent…).
+  Each relative keeps their OWN record and history; the account holder books for them and gets the notifications.
+
+  - Unknown to the practice (e.g. newborn): `POST /me/family` creates a new record.
+  - Already followed at the practice: the secretary generates a code (`Patients > Create app activation code`),
+    then `POST /me/family/link` with the code + the relative's birth date.
+  - At the desk: `POST /patients/:id/guardians` with the account holder's email.
+
+  To book for a relative: `Book appointment` with `"patientId": "{{dependent_id}}"`.
+order: 2500

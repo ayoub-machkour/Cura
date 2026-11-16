@@ -1,0 +1,6 @@
+$kind: http-request
+name: 'Get medical profile'
+description: 'Patient (own record and relatives) or practice staff.'
+method: GET
+url: '{{base_url}}/patients/{{patient_id}}/medical-profile'
+order: 8000

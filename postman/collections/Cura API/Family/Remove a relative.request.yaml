@@ -1,0 +1,5 @@
+$kind: http-request
+name: 'Remove a relative (record is kept)'
+method: DELETE
+url: '{{base_url}}/me/family/{{dependent_id}}'
+order: 4000
