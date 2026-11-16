@@ -50,6 +50,8 @@ export interface BookCommand {
   source: BookingSourceValue;
   holdToken?: string;
   note?: string;
+  /** Utilisateur à l'origine de l'action (historique). Absent = action système. */
+  actorUserId?: string;
 }
 
 export interface BookingResult {
@@ -79,6 +81,10 @@ export const toAppointmentDto = (a: AppointmentRecord): AppointmentDto => ({
   endsAt: a.endsAt.toISOString(),
   status: a.status,
   source: a.source,
+  version: a.version,
+  checkedInAt: a.checkedInAt?.toISOString() ?? null,
+  consultationStartedAt: a.consultationStartedAt?.toISOString() ?? null,
+  completedAt: a.completedAt?.toISOString() ?? null,
 });
 
 const CANCELLABLE = new Set(['scheduled', 'confirmed']);
@@ -94,6 +100,7 @@ export class BookingService {
       idempotencyKey: body.idempotencyKey,
       holdToken: body.holdToken,
       note: body.note,
+      actorUserId: principal.sub,
     };
     if (principal.role === 'patient') {
       if (!principal.pid) throw new ForbiddenError('Aucun dossier patient lié à ce compte');
@@ -156,6 +163,10 @@ export class BookingService {
             },
             db,
           );
+          await appointments.insertStatusChange(
+            { appointmentId: appointment.id, from: null, to: appointment.status, actorUserId: cmd.actorUserId ?? null },
+            db,
+          );
 
           // Même transaction ⇒ l'événement existe si et seulement si le RDV existe.
           await appointments.insertOutboxEvent(
@@ -208,12 +219,16 @@ export class BookingService {
         throw new BusinessRuleError('NOT_CANCELLABLE', 'Un rendez-vous passé ne peut pas être annulé');
       }
       const updated = await appointments.markCancelled(appt.id, reason ?? null, db);
+      await appointments.insertStatusChange(
+        { appointmentId: appt.id, from: appt.status, to: 'cancelled', actorUserId: principal.sub },
+        db,
+      );
       await appointments.insertOutboxEvent(
         {
           aggregateType: 'appointment',
           aggregateId: updated.id,
           eventType: 'appointment.cancelled',
-          payload: { ...toAppointmentDto(updated), cancelledBy: principal.role },
+          payload: { ...toAppointmentDto(updated), previousStatus: appt.status },
         },
         db,
       );

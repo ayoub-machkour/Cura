@@ -25,8 +25,12 @@ import { DoctorsRepository } from './modules/doctors/doctors.repository';
 import { DoctorsService } from './modules/doctors/doctors.service';
 import { PatientsRepository } from './modules/patients/patients.repository';
 import { PatientsService } from './modules/patients/patients.service';
+import { QueueRepository } from './modules/queue/queue.repository';
+import { QueueService } from './modules/queue/queue.service';
+import { OutboxRepository } from './modules/realtime/outbox.repository';
 import { SlotsRepository } from './modules/slots/slots.repository';
 import { SlotsService } from './modules/slots/slots.service';
+import { VisitsService } from './modules/visits/visits.service';
 
 export interface ContainerOverrides {
   pool?: Pool;
@@ -49,6 +53,8 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
   const typesRepo = new AppointmentTypesRepository(pool);
   const slotsRepo = new SlotsRepository(pool);
   const bookingRepo = new BookingRepository(pool);
+  const queueRepo = new QueueRepository(pool);
+  const outboxRepo = new OutboxRepository(pool);
 
   // Sécurité
   const hasher = overrides.hasher ?? new ScryptPasswordHasher();
@@ -97,6 +103,8 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
         alternativesCount: 3,
       },
     }),
+    visits: new VisitsService({ tx, appointments: bookingRepo, clock, logger: logger.child({ module: 'visits' }) }),
+    queue: new QueueService(queueRepo, clock),
   };
 
   return {
@@ -105,7 +113,9 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
     pool,
     redis,
     accessTokens,
-    repositories: { auth: authRepo, patients: patientsRepo },
+    tx,
+    clock,
+    repositories: { auth: authRepo, patients: patientsRepo, outbox: outboxRepo },
     hasher,
     services,
     async close() {

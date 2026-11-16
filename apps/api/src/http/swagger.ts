@@ -30,6 +30,7 @@ export const swaggerDocs = fp(
           { name: 'appointment-types' },
           { name: 'slots' },
           { name: 'appointments' },
+          { name: 'visits', description: 'Parcours de visite et file d’attente (temps réel : Socket.io sur /socket.io)' },
           { name: 'health' },
         ],
         components: {

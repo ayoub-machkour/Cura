@@ -67,9 +67,17 @@ export class AccessTokenService {
 
   /** Retourne null si le jeton est invalide, expiré, ou si son contenu ne respecte pas le schéma. */
   verify(token: string): AuthPrincipal | null {
+    return this.verifySession(token)?.principal ?? null;
+  }
+
+  /** Comme `verify`, avec la date d'expiration (connexions longues : WebSocket). */
+  verifySession(token: string): { principal: AuthPrincipal; expiresAt: Date } | null {
+    if (!token) return null;
     try {
-      const parsed = AuthPrincipal.safeParse(this.verifier(token));
-      return parsed.success ? parsed.data : null;
+      const payload = this.verifier(token) as Record<string, unknown>;
+      const parsed = AuthPrincipal.safeParse(payload);
+      if (!parsed.success || typeof payload.exp !== 'number') return null;
+      return { principal: parsed.data, expiresAt: new Date(payload.exp * 1000) };
     } catch {
       return null;
     }

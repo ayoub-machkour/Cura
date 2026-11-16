@@ -57,10 +57,10 @@ export const bookingRoutes =
         tags: ['appointments'],
         summary: 'Annuler un rendez-vous',
         params: IdParams,
-        body: CancelAppointmentRequest,
+        body: CancelAppointmentRequest.nullish(),
         response: { 200: AppointmentDto, ...errors },
       },
-    }, async (req) => service.cancel(req.params.id, principalOf(req), req.body.reason));
+    }, async (req) => service.cancel(req.params.id, principalOf(req), req.body?.reason));
 
     app.get('/appointments/me', {
       onRequest: [app.authenticate, app.authorize('patient')],

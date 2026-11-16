@@ -2,6 +2,7 @@ import { buildApp } from './app';
 import { InvalidEnvError, loadEnv } from './config/env';
 import { createContainer } from './container';
 import { createLogger } from './infra/logger';
+import { createOutboxRelay } from './modules/realtime/create-relay';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -10,6 +11,7 @@ async function main(): Promise<void> {
   const logger = createLogger(env);
   const container = createContainer(env, logger);
   const app = await buildApp(container);
+  const relay = createOutboxRelay(container, app);
 
   // Arrêt propre (docker stop, déploiement) : on finit les requêtes en cours, puis on ferme les connexions.
   let shuttingDown = false;
@@ -22,6 +24,7 @@ async function main(): Promise<void> {
       process.exit(1);
     }, SHUTDOWN_TIMEOUT_MS).unref();
     try {
+      await relay.stop(); // termine le lot en cours avant de fermer les connexions
       await app.close();
       await container.close();
       clearTimeout(force);
@@ -40,6 +43,7 @@ async function main(): Promise<void> {
   });
 
   await app.listen({ host: env.HOST, port: env.PORT });
+  relay.start();
 }
 
 main().catch((err: unknown) => {

@@ -51,6 +51,11 @@ export const EnvObject = z
     BOOKING_HOLD_TTL_SECONDS: z.coerce.number().int().min(30).max(1800).default(300),
     BOOKING_MIN_LEAD_MINUTES: z.coerce.number().int().min(0).max(10_080).default(60),
     BOOKING_LOCK_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(3000),
+
+    /** Relais outbox → temps réel. */
+    OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(50).max(10_000).default(500),
+    OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(100),
+    OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
   });
 
 /** Règles transverses (cohérence de la configuration de production). */

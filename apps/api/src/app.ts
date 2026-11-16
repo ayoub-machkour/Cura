@@ -17,7 +17,10 @@ import { bookingRoutes } from './modules/booking/booking.routes';
 import { doctorsRoutes } from './modules/doctors/doctors.routes';
 import { healthRoutes } from './modules/health/health.routes';
 import { patientsRoutes } from './modules/patients/patients.routes';
+import { queueRoutes } from './modules/queue/queue.routes';
+import { realtimeGateway } from './modules/realtime/realtime.gateway';
 import { slotsRoutes } from './modules/slots/slots.routes';
+import { visitsRoutes } from './modules/visits/visits.routes';
 
 export const API_PREFIX = '/api/v1';
 
@@ -60,6 +63,13 @@ export async function buildApp(c: Container) {
   await app.register(authGuard, { tokens: c.accessTokens });
   if (env.SWAGGER_ENABLED) await app.register(swaggerDocs);
 
+  await app.register(realtimeGateway, {
+    tokens: c.accessTokens,
+    allowedOrigins: env.CORS_ORIGINS,
+    redis: c.redis,
+    keyPrefix: env.REDIS_KEY_PREFIX,
+  });
+
   await app.register(healthRoutes({ pool: c.pool, redis: c.redis }));
 
   // Versioning : toutes les routes métier sous /api/v1. Une v2 cohabitera sans casser les clients existants.
@@ -82,6 +92,8 @@ export async function buildApp(c: Container) {
       await v1.register(appointmentTypesRoutes(c.services.appointmentTypes));
       await v1.register(slotsRoutes(c.services.slots));
       await v1.register(bookingRoutes(c.services.booking));
+      await v1.register(visitsRoutes(c.services.visits));
+      await v1.register(queueRoutes(c.services.queue));
     },
     { prefix: API_PREFIX },
   );

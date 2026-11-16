@@ -6,6 +6,7 @@
 import type { Pool } from 'pg';
 import type { AppointmentStatus } from '@cura/shared';
 import { type Db, isPgError, PgErrorCode } from '../../infra/db/transaction';
+import { ConflictError } from '../../common/errors';
 import { DuplicateIdempotencyKeyError, PatientTimeConflictError, SlotUnavailableError } from './booking.errors';
 
 export type BookingSourceValue = 'mobile' | 'desk' | 'phone';
@@ -20,6 +21,18 @@ export interface AppointmentRecord {
   endsAt: Date;
   status: AppointmentStatus;
   source: BookingSourceValue;
+  version: number;
+  checkedInAt: Date | null;
+  consultationStartedAt: Date | null;
+  completedAt: Date | null;
+}
+
+/** RDV verrouillé pour une transition, avec les jours calendaires calculés dans le fuseau du médecin. */
+export interface LockedAppointment extends AppointmentRecord {
+  /** Jour local du RDV (YYYY-MM-DD). */
+  appointmentDay: string;
+  /** Jour local de `now` (YYYY-MM-DD). */
+  today: string;
 }
 
 export interface NewAppointment {
@@ -41,9 +54,23 @@ export interface OutboxEvent {
   payload: Record<string, unknown>;
 }
 
-const COLUMNS = `
-  id, doctor_id AS "doctorId", patient_id AS "patientId", appointment_type_id AS "appointmentTypeId",
-  slot_id AS "slotId", starts_at AS "startsAt", ends_at AS "endsAt", status, source`;
+const columns = (alias = '') => {
+  const a = alias ? `${alias}.` : '';
+  return `
+  ${a}id, ${a}doctor_id AS "doctorId", ${a}patient_id AS "patientId", ${a}appointment_type_id AS "appointmentTypeId",
+  ${a}slot_id AS "slotId", ${a}starts_at AS "startsAt", ${a}ends_at AS "endsAt", ${a}status, ${a}source, ${a}version,
+  ${a}checked_in_at AS "checkedInAt", ${a}consultation_started_at AS "consultationStartedAt", ${a}completed_at AS "completedAt"`;
+};
+const COLUMNS = columns();
+
+/** Horodatage posé par chaque statut cible (liste blanche : aucun nom de colonne dynamique non maîtrisé). */
+const TIMESTAMP_FOR_STATUS: Partial<Record<AppointmentStatus, string>> = {
+  confirmed: 'confirmed_at',
+  checked_in: 'checked_in_at',
+  in_consultation: 'consultation_started_at',
+  completed: 'completed_at',
+  no_show: 'no_show_at',
+};
 
 export class BookingRepository {
   constructor(private readonly pool: Pool) {}
@@ -95,6 +122,57 @@ export class BookingRepository {
   async lockById(id: string, tx: Db): Promise<AppointmentRecord | null> {
     const { rows } = await tx.query<AppointmentRecord>(`SELECT ${COLUMNS} FROM appointments WHERE id = $1 FOR UPDATE`, [id]);
     return rows[0] ?? null;
+  }
+
+  /**
+   * Verrouille le RDV (FOR UPDATE) et calcule, dans le fuseau du médecin, son jour local
+   * et celui de `now` : le service compare sans faire d'arithmétique de fuseau en JS.
+   */
+  async lockForTransition(id: string, now: Date, tx: Db): Promise<LockedAppointment | null> {
+    const { rows } = await tx.query<LockedAppointment>(
+      `SELECT ${columns('a')},
+              to_char(a.starts_at AT TIME ZONE d.timezone, 'YYYY-MM-DD') AS "appointmentDay",
+              to_char($2::timestamptz AT TIME ZONE d.timezone, 'YYYY-MM-DD') AS "today"
+         FROM appointments a
+         JOIN doctors d ON d.id = a.doctor_id
+        WHERE a.id = $1
+          FOR UPDATE OF a`,
+      [id, now],
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Applique un changement de statut, pose l'horodatage associé et incrémente la version. */
+  async applyStatus(id: string, to: AppointmentStatus, at: Date, tx: Db): Promise<AppointmentRecord> {
+    const timestampColumn = TIMESTAMP_FOR_STATUS[to];
+    const setTimestamp = timestampColumn ? `, ${timestampColumn} = $3` : '';
+    try {
+      const { rows } = await tx.query<AppointmentRecord>(
+        `UPDATE appointments
+            SET status = $2::appointment_status, version = version + 1 ${setTimestamp}
+          WHERE id = $1
+          RETURNING ${COLUMNS}`,
+        timestampColumn ? [id, to, at] : [id, to],
+      );
+      return rows[0]!;
+    } catch (err) {
+      if (isPgError(err) && err.constraint === 'uq_appointments_one_consultation_per_doctor') {
+        throw new ConflictError('DOCTOR_BUSY', 'Le médecin a déjà un patient en consultation');
+      }
+      throw err;
+    }
+  }
+
+  /** Historique immuable : qui a changé quel statut, et quand. */
+  async insertStatusChange(
+    change: { appointmentId: string; from: AppointmentStatus | null; to: AppointmentStatus; actorUserId: string | null },
+    tx: Db,
+  ): Promise<void> {
+    await tx.query(
+      `INSERT INTO appointment_status_changes (appointment_id, from_status, to_status, actor_user_id)
+       VALUES ($1, $2, $3, $4)`,
+      [change.appointmentId, change.from, change.to, change.actorUserId],
+    );
   }
 
   async markCancelled(id: string, reason: string | null, tx: Db): Promise<AppointmentRecord> {
