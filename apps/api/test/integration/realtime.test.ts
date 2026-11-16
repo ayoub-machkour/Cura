@@ -80,7 +80,7 @@ function collect(socket: Socket): RealtimeEnvelope[] {
   return received;
 }
 
-const emitWithAck = (socket: Socket, event: 'subscribe' | 'unsubscribe', payload: unknown) =>
+const emitWithAck = (socket: Socket, event: 'subscribe' | 'unsubscribe' | 'watch_availability' | 'unwatch_availability', payload: unknown) =>
   socket.timeout(2000).emitWithAck(event, payload) as Promise<SubscribeAck>;
 
 /** Relaie l'outbox puis laisse le temps aux messages de traverser Redis. */
@@ -189,6 +189,53 @@ describe('diffusion des événements', () => {
     await flush();
     expect(mine).toHaveLength(1);
     expect(theirs).toHaveLength(0);
+  });
+});
+
+describe('famille et disponibilités en direct', () => {
+  it('le papa reçoit les événements des RDV de son enfant', async () => {
+    const papa = await registerPatient(ctx.app);
+    const child = (
+      await ctx.app.inject({ method: 'POST', url: '/api/v1/me/family', headers: as(papa), payload: { firstName: 'Yasmine', lastName: 'Amrani', birthDate: '2016-05-10', relationship: 'child' } })
+    ).json().patient.id;
+    const events = collect(await connect({ session: papa }));
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/appointments',
+      headers: as(papa),
+      payload: { slotId: slots[0], appointmentTypeId: typeId, idempotencyKey: randomUUID(), patientId: child },
+    });
+    expect(res.statusCode).toBe(201);
+    await flush();
+    expect(events.map((e) => [e.type, e.data.patientId])).toEqual([['appointment.booked', child]]);
+  });
+
+  it('un patient qui regarde l’agenda voit un créneau se prendre puis se libérer (sans donnée personnelle)', async () => {
+    const watcher = await registerPatient(ctx.app);
+    const socket = await connect({ session: watcher });
+    const availability: unknown[] = [];
+    socket.on('slot.availability', (e: unknown) => availability.push(e));
+    expect(await emitWithAck(socket, 'watch_availability', { doctorId })).toEqual({ ok: true });
+
+    const booker = await registerPatient(ctx.app);
+    const id = await patientBooks(booker, 1);
+    await flush();
+    await ctx.app.inject({ method: 'POST', url: `/api/v1/appointments/${id}/cancel`, headers: as(booker) });
+    await flush();
+
+    expect(availability).toEqual([
+      { doctorId, slotId: slots[1], startsAt: expect.any(String), available: false },
+      { doctorId, slotId: slots[1], startsAt: expect.any(String), available: true },
+    ]);
+    expect(JSON.stringify(availability)).not.toContain(booker.user.patientId!);
+  });
+
+  it('watch_availability : validation et limite par connexion', async () => {
+    const socket = await connect({ session: await registerPatient(ctx.app) });
+    expect(await emitWithAck(socket, 'watch_availability', { doctorId: 'x' })).toMatchObject({ ok: false, code: 'VALIDATION_ERROR' });
+    for (let i = 0; i < 20; i++) expect((await emitWithAck(socket, 'watch_availability', { doctorId: randomUUID() })).ok).toBe(true);
+    expect(await emitWithAck(socket, 'watch_availability', { doctorId: randomUUID() })).toMatchObject({ ok: false, code: 'TOO_MANY_SUBSCRIPTIONS' });
   });
 });
 

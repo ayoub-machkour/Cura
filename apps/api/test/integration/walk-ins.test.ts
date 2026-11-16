@@ -62,21 +62,40 @@ describe('POST /walk-ins', () => {
     expect(history.rows).toEqual([{ from_status: null, to_status: 'checked_in' }]);
   });
 
-  it('s’intercale par ordre d’arrivée avec les patients sur rendez-vous', async () => {
-    const [slot] = await seedSlots(ctx.c.pool, doctorId, new Date('2030-01-15T09:00:00Z'), 1);
-    const [scheduled, walker] = await seedPatients(ctx.c.pool, 2);
-    at('2030-01-15T08:00:00Z'); // réservé à l'avance
-    const booked = await ctx.c.services.booking.book({ patientId: scheduled!, slotId: slot!, appointmentTypeId: typeId, idempotencyKey: randomUUID(), source: 'desk' });
+  it('pratique du cabinet : RDV arrivés à l’heure d’abord, walk-ins dans les trous, arrivés en avance ensuite', async () => {
+    // RDV à 10:00 et à 11:00 (heure de Paris).
+    const [slotDue, slotLater] = [
+      ...(await seedSlots(ctx.c.pool, doctorId, new Date('2030-01-15T09:00:00Z'), 1)),
+      ...(await seedSlots(ctx.c.pool, doctorId, new Date('2030-01-15T10:00:00Z'), 1)),
+    ];
+    const [due, early, walker] = await seedPatients(ctx.c.pool, 3);
+    at('2030-01-15T07:00:00Z'); // réservés à l'avance
+    const bookedDue = await ctx.c.services.booking.book({ patientId: due!, slotId: slotDue!, appointmentTypeId: typeId, idempotencyKey: randomUUID(), source: 'desk' });
+    const bookedEarly = await ctx.c.services.booking.book({ patientId: early!, slotId: slotLater!, appointmentTypeId: typeId, idempotencyKey: randomUUID(), source: 'desk' });
 
-    at('2030-01-15T09:02:00Z');
+    // Ordre d'ARRIVÉE : RDV de 11:00 (très en avance), puis le walk-in, puis le RDV de 10:00.
+    at('2030-01-15T08:40:00Z');
+    await ctx.app.inject({ method: 'POST', url: `/api/v1/appointments/${bookedEarly.appointment.id}/check-in`, headers: as(secretary) });
+    at('2030-01-15T08:50:00Z');
     await walkIn(secretary, { patientId: walker });
-    at('2030-01-15T09:05:00Z');
-    await ctx.app.inject({ method: 'POST', url: `/api/v1/appointments/${booked.appointment.id}/check-in`, headers: as(secretary) });
+    at('2030-01-15T08:58:00Z');
+    await ctx.app.inject({ method: 'POST', url: `/api/v1/appointments/${bookedDue.appointment.id}/check-in`, headers: as(secretary) });
 
+    at('2030-01-15T09:05:00Z'); // 10:05 à Paris : le RDV de 10:00 est dû, celui de 11:00 pas encore
     const waiting = (await queue()).json().waiting;
-    expect(waiting.map((e: { patientId: string; isWalkIn: boolean }) => [e.patientId, e.isWalkIn])).toEqual([
-      [walker, true],
-      [scheduled, false],
+    expect(waiting.map((e: { patientId: string; group: string; position: number }) => [e.patientId, e.group, e.position])).toEqual([
+      [due, 'due', 1],
+      [walker, 'walk_in', 2],
+      [early, 'early', 3],
+    ]);
+
+    // À 11:05, le patient de 11:00 devient prioritaire sur le walk-in.
+    at('2030-01-15T10:05:00Z');
+    const later = (await queue()).json().waiting;
+    expect(later.map((e: { patientId: string; group: string }) => [e.patientId, e.group])).toEqual([
+      [due, 'due'],
+      [early, 'due'],
+      [walker, 'walk_in'],
     ]);
   });
 

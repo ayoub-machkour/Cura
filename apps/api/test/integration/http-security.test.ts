@@ -203,3 +203,19 @@ describe('rate limiting', () => {
     }
   });
 });
+
+describe('CORS : méthodes utilisées par l’app cabinet', () => {
+  it('autorise PUT (profil médical) en pré-vérification CORS', async () => {
+    const ctx2 = await createTestContext();
+    try {
+      const res = await ctx2.app.inject({
+        method: 'OPTIONS',
+        url: '/api/v1/patients/3f1c2a6e-8b4d-4c1a-9e2f-1a2b3c4d5e6f/medical-profile',
+        headers: { origin: 'http://localhost:5173', 'access-control-request-method': 'PUT' },
+      });
+      expect(res.headers['access-control-allow-methods']).toContain('PUT');
+    } finally {
+      await ctx2.close();
+    }
+  });
+});

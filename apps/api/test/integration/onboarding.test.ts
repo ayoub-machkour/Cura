@@ -147,11 +147,19 @@ describe('sécurité du code d’activation', () => {
 });
 
 describe('génération du code (cabinet)', () => {
-  it('409 si le patient a déjà un compte ; 404 si dossier inconnu ; 403 pour un patient', async () => {
+  it('dossier déjà doté d’un compte : le code sert au rattachement famille, pas à un 2e compte (409, code non consommé)', async () => {
+    const patient = await registerPatient(ctx.app, { birthDate: BIRTH_DATE });
+    const invitation = await invite(patient.user.patientId!);
+    expect(invitation.statusCode).toBe(201);
+    const second = await claim({ code: invitation.json().code });
+    expect(second.statusCode).toBe(409);
+    expect(second.json().code).toBe('PATIENT_ALREADY_HAS_ACCOUNT');
+    const { rows } = await ctx.c.pool.query(`SELECT used_at FROM patient_invitations`);
+    expect(rows[0].used_at).toBeNull();
+  });
+
+  it('404 si dossier inconnu ; 403 pour un patient', async () => {
     const patient = await registerPatient(ctx.app);
-    const already = await invite(patient.user.patientId!);
-    expect(already.statusCode).toBe(409);
-    expect(already.json().code).toBe('PATIENT_ALREADY_HAS_ACCOUNT');
     expect((await invite(randomUUID())).statusCode).toBe(404);
     expect((await invite(await deskPatient(), patient)).statusCode).toBe(403);
   });
