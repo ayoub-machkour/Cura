@@ -8,3 +8,4 @@ export * from './schemas/slots';
 export * from './schemas/appointments';
 export * from './schemas/queue';
 export * from './schemas/realtime';
+export * from './schemas/invitations';

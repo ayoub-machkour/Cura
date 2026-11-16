@@ -1,9 +1,19 @@
 import { z } from 'zod';
-import { IsoDate, IsoDateTime, Uuid } from '../primitives';
+import { LIMITS } from '../constraints';
+import { IsoDate, IsoDateTime, safeText, Uuid } from '../primitives';
 import { AppointmentStatus } from './appointments';
 
 export const QueueQuery = z.object({ doctorId: Uuid });
 export type QueueQuery = z.infer<typeof QueueQuery>;
+
+/** Patient venu sans rendez-vous : entre directement en salle d'attente. */
+export const CreateWalkInRequest = z.object({
+  patientId: Uuid,
+  doctorId: Uuid,
+  appointmentTypeId: Uuid,
+  note: safeText(LIMITS.note.max).optional(),
+});
+export type CreateWalkInRequest = z.infer<typeof CreateWalkInRequest>;
 
 export const QueueEntryDto = z.object({
   appointmentId: Uuid,
@@ -20,6 +30,8 @@ export const QueueEntryDto = z.object({
   position: z.number().int().min(1).nullable(),
   /** Patient attendu dont l'heure de RDV est dépassée. */
   isLate: z.boolean(),
+  /** Patient venu sans rendez-vous. */
+  isWalkIn: z.boolean(),
 });
 export type QueueEntryDto = z.infer<typeof QueueEntryDto>;
 
