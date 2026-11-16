@@ -102,6 +102,12 @@ describe('validation des entrées (Zod) et format d’erreur', () => {
     expect(res.statusCode).toBe(413);
   });
 
+  it('GET /api/v1 décrit l’API (découverte)', async () => {
+    const res = await ctx.app.inject({ method: 'GET', url: '/api/v1' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ name: 'Cura API', version: 'v1', docs: '/docs' });
+  });
+
   it('404 JSON sur une route inconnue', async () => {
     const res = await ctx.app.inject({ method: 'GET', url: '/api/v1/nope' });
     expect(res.statusCode).toBe(404);

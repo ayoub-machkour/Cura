@@ -4,6 +4,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
+import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { Container } from './container';
 import { authGuard } from './http/auth-guard';
@@ -19,6 +20,13 @@ import { patientsRoutes } from './modules/patients/patients.routes';
 import { slotsRoutes } from './modules/slots/slots.routes';
 
 export const API_PREFIX = '/api/v1';
+
+const ApiInfo = z.object({
+  name: z.string(),
+  version: z.string(),
+  docs: z.string().nullable(),
+  health: z.object({ live: z.string(), ready: z.string() }),
+});
 const REQUEST_ID_RE = /^[A-Za-z0-9._-]{8,64}$/;
 
 export async function buildApp(c: Container) {
@@ -58,6 +66,16 @@ export async function buildApp(c: Container) {
   const cookieConfig = { secure: env.COOKIE_SECURE, domain: env.COOKIE_DOMAIN };
   await app.register(
     async (v1) => {
+      // Point d'entrée de découverte : GET /api/v1 indique où trouver la doc et les sondes.
+      v1.withTypeProvider<ZodTypeProvider>().get('/', {
+        schema: { tags: ['health'], summary: 'Informations sur l’API', security: [], response: { 200: ApiInfo } },
+      }, async () => ({
+        name: 'Cura API',
+        version: 'v1',
+        docs: env.SWAGGER_ENABLED ? '/docs' : null,
+        health: { live: '/health/live', ready: '/health/ready' },
+      }));
+
       await v1.register(authRoutes(c.services.auth, cookieConfig, env.RATE_LIMIT_AUTH_MAX));
       await v1.register(patientsRoutes(c.services.patients));
       await v1.register(doctorsRoutes(c.services.doctors));
