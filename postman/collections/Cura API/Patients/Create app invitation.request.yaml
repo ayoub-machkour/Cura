@@ -1,0 +1,17 @@
+$kind: http-request
+name: 'Create app activation code (staff)'
+description: |-
+  Generates a one-time activation code for a patient already known to the practice
+  (shown ONCE, valid 7 days). Give it to the patient (printed or read aloud); the patient
+  enters it in the app with their birth date and recovers their whole history.
+method: POST
+url: '{{base_url}}/patients/{{patient_id}}/invitations'
+order: 7000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) {
+        pm.collectionVariables.set('invitation_code', pm.response.json().code);
+        console.log('Activation code generated (expires', pm.response.json().expiresAt + ')');
+      }

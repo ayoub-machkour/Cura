@@ -1,0 +1,23 @@
+$kind: http-request
+name: 'Register walk-in (no appointment)'
+description: 'Patient without appointment: goes straight to the waiting room (first come, first served). Staff only.'
+method: POST
+url: '{{base_url}}/walk-ins'
+order: 500
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "patientId": "{{patient_id}}",
+      "doctorId": "{{doctor_id}}",
+      "appointmentTypeId": "{{appointment_type_id}}",
+      "note": "Walk-in"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) pm.collectionVariables.set('appointment_id', pm.response.json().id);

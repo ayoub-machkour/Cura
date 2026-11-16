@@ -139,6 +139,9 @@ Documentation interactive sur **`/docs`** (OpenAPI 3.1 générée depuis les sch
 | POST | `/api/v1/appointments/:id/cancel` | propriétaire, personnel |
 | GET | `/api/v1/appointments/me` · `/api/v1/appointments` (agenda) | patient · personnel |
 | POST | `/api/v1/appointments/:id/confirm` · `/check-in` · `/start` · `/complete` · `/no-show` | selon l’action (voir « File d’attente ») |
+| POST | `/api/v1/walk-ins` (patient sans RDV → salle d’attente) | secrétariat, admin, médecin (sa file) |
+| POST | `/api/v1/patients/:id/invitations` (code d’activation de l’app) | personnel |
+| POST | `/api/v1/auth/claim` (activer son compte avec le code) | public |
 | GET | `/api/v1/queue?doctorId=` (file du jour) | personnel (médecin : sa file) |
 | GET | `/api/v1/appointments/:id/queue-position` | propriétaire, personnel |
 | GET | `/health/live` · `/health/ready` | public |
@@ -194,6 +197,42 @@ La base garantit en plus :
 - Livraison **au moins une fois** : dédupliquer par `id`, comparer `data.version`.
 - Le relais de l'outbox lit les événements avec `FOR UPDATE SKIP LOCKED`, sans doublon même avec plusieurs instances. L'adaptateur Redis relie les instances entre elles, et les événements publiés sont purgés après `OUTBOX_RETENTION_DAYS`.
 
+## Patients sans compte, walk-in et activation de l'app
+
+**Principe : le dossier patient appartient au cabinet, le compte appartient au patient.** Ce sont deux entités
+séparées (`patients` ≠ `users`), ce qui permet de servir tout le monde.
+
+- **Patients sans smartphone ou âgés.** Le secrétariat crée le dossier et gère tout au guichet. Ces patients n'ont jamais besoin de l'app.
+- **Walk-in (sans rendez-vous).** `POST /api/v1/walk-ins` crée une visite **sans créneau**, directement en salle d'attente :
+  - elle s'intercale par ordre d'arrivée avec les patients sur RDV ;
+  - elle n'occupe pas l'agenda, car c'est la file qui la gère ;
+  - la base garantit qu'un patient n'est **qu'une fois** en file (index unique) ;
+  - un patient reparti sans consulter est clôturé par le personnel, et pourra revenir.
+- **Activation de l'app pour un patient déjà connu.** Le secrétariat génère un code (`POST /patients/:id/invitations`, ex. `K7QM-4XRP`), à imprimer ou dicter. Le patient saisit **code + date de naissance** dans l'app (`POST /auth/claim`). Son compte est rattaché à **son dossier existant** et il retrouve automatiquement tout son historique, sans doublon.
+  - Pas de rattachement automatique par téléphone : une famille partage un numéro, et les numéros sont recyclés.
+  - Code d'environ 40 bits, alphabet sans ambiguïté (pas de 0/O, 1/I/L), **stocké haché**, usage unique, expiration 7 jours, une seule invitation active par patient.
+  - Blocage après 5 dates de naissance erronées. Même réponse pour un code inconnu ou une mauvaise date, donc pas d'énumération. Le code n'apparaît jamais dans les logs.
+- **Nouveau patient inconnu du cabinet.** Inscription libre dans l'app (`POST /auth/register`).
+
+**Anti-accaparement.** En ligne, un patient a au plus `BOOKING_MAX_ACTIVE_PER_PATIENT` RDV à venir (3 par défaut, sans limite pour le secrétariat). Les réservations d'un même patient sont sérialisées (verrou sur son dossier) : 5 réservations simultanées donnent exactement 3 RDV.
+
+## Test de charge
+
+```bash
+pnpm db:up && pnpm --filter @cura/api load:test     # base de TEST uniquement (garde-fou)
+```
+
+Le test vérifie après chaque scénario qu'il n'y a **aucune erreur serveur et aucune double réservation**. Mesures sur un poste de développement Windows avec Docker Desktop (API, PostgreSQL et Redis sur la même machine, pool de 25 connexions). Elles sont indicatives : elles servent à voir la **tendance**, pas une capacité de production.
+
+| Scénario | Résultat |
+|---|---|
+| Ruée : 200 patients sur 20 créneaux, simultanément | 20 × 201, 180 × 409 avec alternatives, 0 erreur, 0 double réservation |
+| Même client × 5 : 50 patients × 5 réservations simultanées | exactement 3 RDV par patient, 0 erreur |
+| Charge mixte, concurrence 1 → 25 | p95 de 44 à 113 ms, débit qui monte jusqu'à environ 500 req/s |
+| Charge mixte, concurrence 50 → 100 | débit plafonné (~500 req/s), p95 de 207 à 402 ms, requêtes en attente de connexion |
+
+**Lecture :** jusqu'à environ 25 requêtes simultanées, le système monte en débit sans attente. Au-delà, le **pool PostgreSQL est le goulot**. La latence augmente alors proportionnellement, sans erreur ni incohérence : le système se dégrade proprement. Pour un cabinet, c'est une marge très large. Pour un réseau de cabinets, les leviers sont : plusieurs instances de l'API (déjà compatibles grâce au relais et à l'adaptateur Redis), PgBouncer, un pool plus grand, et un cache Redis sur les lectures de disponibilités. La ruée est plus lente (p50 ~1,5 s), car chaque perdant calcule ses alternatives pendant que 200 requêtes se disputent 25 connexions.
+
 ## Tests
 
 ```bash
@@ -202,7 +241,7 @@ pnpm --filter @cura/api test         # unitaires + intégration
 pnpm --filter @cura/api test:unit    # sans Docker
 ```
 
-294 tests (97,8 % des lignes couvertes, `pnpm --filter @cura/api test:coverage`), dont :
+324 tests (97,8 % des lignes couvertes, `pnpm --filter @cura/api test:coverage`), dont :
 - 50 réservations simultanées sur le même créneau : exactement 1 gagnant ;
 - rejeu idempotent ;
 - rotation et vol de refresh token ;
@@ -213,7 +252,8 @@ pnpm --filter @cura/api test:unit    # sans Docker
 - chaque route testée pour chaque rôle et chaque règle métier (créneau bloqué, délai de prévenance, motif trop long…) ;
 - résilience : base indisponible (500 sans fuite, health 503), verrou bloqué (409 au lieu d’une attente infinie) ;
 - parcours de visite (35 combinaisons action × statut), un seul patient en consultation même en concurrence ;
-- temps réel de bout en bout (vraies connexions WebSocket) : authentification, Origin, isolation des salles, expiration de session, relais multi-instance sans doublon.
+- temps réel de bout en bout (vraies connexions WebSocket) : authentification, Origin, isolation des salles, expiration de session, relais multi-instance sans doublon ;
+- 5 réservations simultanées d’un même client (limite tenue), walk-ins (double clic, file unique), activation par code (force brute, usage unique, activation concurrente).
 
 ## Feuille de route
 
