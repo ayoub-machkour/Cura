@@ -1,141 +1,180 @@
-# Medcine — Gestion de cabinet médical
+# Cura — Gestion de cabinet médical
 
-Monorepo **pnpm + Turborepo**, 100 % TypeScript. Les contrats d'API (Zod) sont partagés
-entre le serveur, l'application cabinet et l'application mobile : un champ renommé côté API
-casse la compilation des clients, pas la production.
+Monorepo **pnpm + Turborepo**, 100 % TypeScript : API Fastify, PostgreSQL, Redis, Nginx.
+Les contrats d'API et les règles de validation (Zod) sont partagés entre le serveur,
+l'application cabinet et l'application mobile.
 
-## 1. Architecture des dossiers
+## Démarrage rapide
 
-```
-medcine/
-├── apps/
-│   ├── api/                         Fastify + PostgreSQL + Redis : SEULE source de vérité
-│   │   ├── src/
-│   │   │   ├── main.ts / app.ts     Composition root : instancie et câble les dépendances
-│   │   │   ├── config/              Variables d'environnement validées par Zod au démarrage
-│   │   │   ├── http/                error-handler, auth (JWT), rate-limit, CORS
-│   │   │   ├── infra/
-│   │   │   │   ├── db/              Pool pg, withTransaction, migrations runner
-│   │   │   │   ├── redis/
-│   │   │   │   ├── realtime/        Gateway Socket.io + relais Outbox → événements live
-│   │   │   │   └── push/            Expo Push (notifications mobiles)
-│   │   │   ├── modules/             Un dossier par contexte métier
-│   │   │   │   ├── booking/         ← réservation concurrente (implémenté)
-│   │   │   │   │   ├── booking.controller.ts   HTTP : validation, identité → service
-│   │   │   │   │   ├── booking.service.ts      Règles métier + transaction
-│   │   │   │   │   ├── booking.repository.ts   SQL (PostgreSQL)
-│   │   │   │   │   ├── booking.ports.ts        Interfaces (DIP)
-│   │   │   │   │   ├── booking.errors.ts       Erreurs métier typées
-│   │   │   │   │   └── slot-hold.store.ts      Pré-réservation Redis (TTL)
-│   │   │   │   ├── scheduling/      Planning médecin → génération des slots
-│   │   │   │   ├── agenda/          Vues jour/semaine/mois, déplacement de RDV
-│   │   │   │   ├── queue/           File d'attente live (check-in, statuts)
-│   │   │   │   ├── billing/         Actes, factures, paiements, clôture de caisse
-│   │   │   │   ├── patients/
-│   │   │   │   ├── health-record/   Ordonnances, comptes-rendus (stockage chiffré)
-│   │   │   │   └── notifications/   Rappels J-1 / H-2 (BullMQ, jobs différés)
-│   │   └── test/                    Tests d'intégration sur vraie base PostgreSQL
-│   │
-│   ├── cabinet/                     React + Vite + Tailwind (+ shell Tauri pour le desktop)
-│   │   ├── src/features/{agenda,queue,billing,patients}/
-│   │   ├── src/shared/{api,realtime,ui}/
-│   │   └── src-tauri/
-│   │
-│   └── mobile/                      Expo (React Native) + expo-router + NativeWind
-│       ├── app/(auth)/  app/(tabs)/{home,booking,records,profile}/
-│       └── src/features/
-│
-└── packages/
-    ├── shared/                      Contrats Zod + types (API ⇄ clients)
-    ├── db/migrations/               Migrations SQL versionnées
-    ├── api-client/                  Client typé + hooks TanStack Query (optimistic UI)
-    ├── ui-tokens/                   Design tokens communs Tailwind / NativeWind
-    └── config/                      tsconfig, ESLint, Prettier partagés
+Prérequis : Node ≥ 22.12, pnpm 9 (`corepack enable`), Docker Desktop.
+
+```bash
+pnpm install
+cp .env.example .env                 # puis remplacer les valeurs « change-me »
+
+# Option A — tout dans Docker (bases, Redis, migrations, API, Nginx)
+docker compose up -d --build
+# → API : http://localhost:8080/api/v1   Swagger : http://localhost:8080/docs
+
+# Option B — infrastructure dans Docker, API en local (rechargement à chaud)
+pnpm db:up                           # postgres, postgres-test, redis, redis-test
+pnpm db:migrate                      # applique les migrations sur cura_dev
+pnpm --filter @cura/api create-admin # premier compte admin (ADMIN_EMAIL / ADMIN_PASSWORD du .env)
+pnpm --filter @cura/api dev          # → http://localhost:3000/docs
 ```
 
-### Décision d'architecture n°1 : une seule base qui accepte les réservations
+## Architecture
 
-Le cahier des charges évoque un « backend local » au cabinet **et** une app mobile qui réserve
-en libre-service. Si le cabinet et le cloud avaient chacun leur base modifiable, deux patients
-pourraient réserver le même créneau sur deux bases différentes. **Aucun verrou ne peut empêcher
-ça** : il faudrait une synchronisation multi-maître, avec résolution de conflits après coup.
+```
+cura/
+├── apps/api/                       Fastify + PostgreSQL + Redis
+│   ├── Dockerfile                  build multi-étapes, utilisateur non-root, tini
+│   ├── src/
+│   │   ├── main.ts                 démarrage + arrêt propre (SIGTERM)
+│   │   ├── app.ts                  plugins, sécurité, routes /api/v1
+│   │   ├── container.ts            composition root (injection de dépendances)
+│   │   ├── migrate.ts              CLI de migration
+│   │   ├── config/env.ts           validation Zod des variables d'environnement
+│   │   ├── common/                 erreurs métier, pagination, sécurité (hash, JWT)
+│   │   ├── http/                   auth-guard (RBAC + CSRF), cookies, helmet/CORS/rate-limit, Swagger, erreurs
+│   │   ├── infra/                  pool PostgreSQL, transactions, migrateur, Redis, logger
+│   │   └── modules/<domaine>/
+│   │       ├── *.routes.ts         CONTRÔLEUR : schémas Zod, rôles, délégation au service
+│   │       ├── *.service.ts        LOGIQUE MÉTIER : aucun SQL, aucun objet HTTP
+│   │       └── *.repository.ts     ACCÈS DONNÉES : SQL paramétré uniquement
+│   └── test/{unit,integration}/
+├── packages/
+│   ├── shared/                     constraints.ts (règles) + schémas Zod partagés
+│   └── db/migrations/              NNNN_nom.up.sql / NNNN_nom.down.sql
+├── nginx/                          reverse proxy (dev HTTP, prod TLS)
+├── docker-compose.yml              développement
+└── docker-compose.prod.yml         production
+```
 
-**Recommandation :** une API centrale hébergée (PostgreSQL managé, chez un hébergeur certifié
-pour les données de santé selon le pays) qui reste la seule source de vérité. L'app cabinet en est
-un client rapide : cache local, Optimistic UI, WebSocket. Pour fonctionner sans Internet, le cabinet
-garde une réplique en lecture seule et une file d'actions hors-ligne réservée à ce qui ne crée pas
-de conflit (encaissements, notes). L'agenda passe en lecture seule tant que la connexion est coupée.
+Modules : `auth`, `patients`, `doctors`, `appointment-types`, `slots`, `booking`, `health`.
 
-### Décision n°2 : Tauri plutôt qu'Electron pour le desktop
-Même code React. Binaire d'environ 10 Mo au lieu d'environ 150 Mo, et nettement moins de RAM
-sur les PC souvent modestes d'un secrétariat. Accès natif à l'impression des reçus.
+## Bases de données : dev, test et prod séparées
 
-## 2. Schéma de base de données
+| Base | Conteneur | Port (127.0.0.1) | Persistance | Usage |
+|---|---|---|---|---|
+| `cura_dev` | `postgres` | 5432 | volume | développement |
+| `cura_test` | `postgres-test` | 5433 | RAM (tmpfs) | tests automatisés |
+| `cura_prod` | `docker-compose.prod.yml` | non exposé | volume dédié | production |
 
-Voir [`packages/db/migrations/0001_init.sql`](packages/db/migrations/0001_init.sql).
+Les tests **refusent de démarrer** si la base visée ne se termine pas par `_test`, si `NODE_ENV` n'est pas `test`,
+ou si le préfixe Redis ne contient pas `test` ([guard.ts](apps/api/test/integration/guard.ts)). Redis suit le même
+schéma : `redis` (6379) pour le dev et `redis-test` (6380) pour les tests.
 
-| Table | Rôle | Garanties clés |
+## Migrations
+
+```bash
+pnpm --filter @cura/api migrate up            # appliquer
+pnpm --filter @cura/api migrate status        # état
+pnpm --filter @cura/api migrate down 1        # annuler la dernière (interdit en production)
+pnpm --filter @cura/api migrate:create add_x  # créer 0003_add_x.up.sql / .down.sql
+```
+
+- Chaque migration s'exécute dans sa propre transaction (tout ou rien).
+- Un verrou consultatif empêche deux migrations simultanées (plusieurs conteneurs au déploiement).
+- Une somme de contrôle bloque l'exécution si une migration **déjà appliquée** a été modifiée.
+  Toute évolution passe par une nouvelle migration (exemple : `0002_auth` ajoute des FK sur des tables existantes).
+- En Docker, le service `migrate` s'exécute avant l'API. L'API ne démarre que si les migrations ont réussi.
+
+## Validation : une règle, deux remparts
+
+[`packages/shared/src/constraints.ts`](packages/shared/src/constraints.ts) définit chaque règle une seule fois
+(longueurs, regex E.164, noms, anti-XSS…) :
+
+- **Zod** l'applique sur **toutes** les routes qui reçoivent des données (body, query, params), côté API et clients.
+- **PostgreSQL** l'applique en `CHECK` / `DOMAIN` (`person_name`, `phone_e164`, `email_address`, `safe_text`…).
+- Le test de contrat [`db-constraints.contract.test.ts`](apps/api/test/integration/db-constraints.contract.test.ts)
+  vérifie que Zod et la base rendent **le même verdict** pour chaque règle.
+
+Les champs hors schéma sont ignorés, ce qui empêche l'assignation de masse.
+
+## Sécurité
+
+| Mesure | Implémentation |
+|---|---|
+| En-têtes HTTP | `@fastify/helmet` : CSP `default-src 'none'`, nosniff, frameguard, referrer-policy, HSTS en prod |
+| CORS | liste blanche explicite (`CORS_ORIGINS`), credentials, jamais `*` |
+| XSS | rejet des balises HTML dans tout texte libre (Zod + domaine SQL `safe_text`), réponses JSON uniquement, CSP stricte, `Cache-Control: no-store` |
+| Session | access token JWT HS256 de 15 min dans un cookie **httpOnly**, `SameSite=Strict`, `Secure` en prod |
+| Refresh token | opaque, cookie **httpOnly** limité à `/api/v1/auth`, **stocké haché** (SHA-256), **rotation** à chaque usage, **réutilisation détectée** : toute la famille est révoquée |
+| CSRF | double-submit (`cura_csrf` + en-tête `x-csrf-token`), comparaison à temps constant |
+| Mots de passe | scrypt (N=2¹⁵, r=8), 12 caractères minimum, re-hachage transparent si les paramètres sont durcis |
+| Force brute | verrouillage 15 min après 5 échecs, même réponse pour un email inconnu ou un mauvais mot de passe (pas d'énumération) |
+| Rate limiting | Nginx (`limit_req`) + API (`@fastify/rate-limit` partagé via Redis), limite stricte sur login/register |
+| RBAC | rôles `admin`, `doctor`, `secretary`, `patient` : `app.authorize(...)` sur chaque route ; un patient n'accède qu'à ses données (404 et non 403 sur les données d'autrui) |
+| SQL | requêtes paramétrées uniquement ; noms de colonnes dynamiques issus de listes blanches |
+| Conteneurs | utilisateur non-root, système de fichiers en lecture seule, `cap_drop: ALL`, `no-new-privileges` (prod) ; ports dev liés à 127.0.0.1 |
+| Secrets | `.env*` exclus de Git et de l'image Docker ; seuls les `*.example` sont versionnés |
+
+## Logs
+
+Logs JSON structurés (pino) en production, format lisible en dev (`LOG_PRETTY=true`).
+- Chaque requête porte un `reqId`, généré par Nginx (`$request_id`) et transmis à l'API.
+  Il est renvoyé au client dans `x-request-id` et figure dans chaque réponse d'erreur.
+- Événements métier nommés (`auth.login_failed`, `appointment.booked`, `auth.refresh_reuse_detected`…).
+- Données sensibles masquées : cookies, `authorization`, mots de passe, jetons.
+  Les query strings ne sont pas loggées, car elles peuvent contenir un nom de patient.
+
+## API (v1)
+
+Documentation interactive sur **`/docs`** (OpenAPI 3.1 générée depuis les schémas Zod, désactivée en production).
+
+| Méthode | Route | Rôles |
 |---|---|---|
-| `doctors` | Praticiens | `registration_number` UNIQUE |
-| `patients` | Dossiers | `national_id` UNIQUE partiel ; pas d'UNIQUE sur le téléphone (familles) |
-| `appointment_types` | Motifs (durée, couleur agenda) | `color_hex` validé |
-| `slots` | Créneaux générés | `EXCLUDE` : aucun chevauchement par médecin |
-| `appointments` | RDV | voir ci-dessous |
-| `invoices` / `invoice_items` / `payments` | Caisse | centimes en `bigint`, numérotation sans trou, facture émise immuable (trigger) |
-| `outbox_events` | Événements transactionnels | publiés après commit (temps réel + rappels) |
+| POST | `/api/v1/auth/register` · `/login` · `/refresh` · `/logout` | public / session |
+| GET | `/api/v1/auth/me` | connecté |
+| POST | `/api/v1/users` | admin |
+| GET/POST/PATCH | `/api/v1/patients[/:id]` (liste paginée + recherche `q`) | personnel |
+| GET/PATCH | `/api/v1/patients/me` | patient |
+| GET/POST | `/api/v1/doctors[/:id]` | connecté / admin |
+| GET/POST/PATCH | `/api/v1/appointment-types[/:id]` | connecté / admin |
+| GET | `/api/v1/doctors/:doctorId/slots` (disponibilités paginées) | connecté |
+| POST | `/api/v1/doctors/:doctorId/slots/generate` | admin, secrétaire |
+| POST | `/api/v1/slots/:slotId/hold` (pré-réservation Redis) | patient |
+| POST | `/api/v1/appointments` (201 · 200 rejeu · 409 + alternatives) | patient, personnel |
+| POST | `/api/v1/appointments/:id/cancel` | propriétaire, personnel |
+| GET | `/api/v1/appointments/me` · `/api/v1/appointments` (agenda) | patient · personnel |
+| GET | `/health/live` · `/health/ready` | public |
 
-**Trois verrous complémentaires contre la double réservation (dans `appointments`) :**
-1. `uq_appointments_active_slot` : un seul RDV actif par créneau ;
-2. `ex_appointments_doctor_overlap` : aucun chevauchement pour un médecin, y compris pour les walk-ins sans créneau ;
-3. `ex_appointments_patient_overlap` : un patient ne peut pas avoir deux RDV à la même heure.
+**Pagination** par curseur (keyset) : `?limit=20&cursor=…` renvoie `{ data, page: { limit, nextCursor, hasMore } }`.
+Le coût reste constant quelle que soit la page, et le curseur est opaque et revalidé.
 
-De plus, la FK composite `(slot_id, doctor_id, starts_at, ends_at)` empêche qu'un RDV dise un horaire
-différent de celui de son créneau.
+## Réservation concurrente
 
-Le statut « réservé » n'est **pas** stocké dans `slots`. Il se déduit de l'existence d'un RDV actif.
-Annuler un RDV libère donc le créneau, sans risque de désynchronisation entre deux colonnes.
+Trois niveaux de protection, détaillés dans [`booking.service.ts`](apps/api/src/modules/booking/booking.service.ts) :
 
-## 3. Réservation concurrente
+1. **Redis** : pré-réservation TTL quand le patient sélectionne un créneau. C'est une aide UX : si Redis tombe, la réservation continue.
+2. **`SELECT … FOR UPDATE`** + `lock_timeout` : sérialise les réservations d'un même créneau.
+3. **Contraintes PostgreSQL** (`EXCLUDE` + index unique partiel) : aucune double réservation n'est possible, même avec un bug applicatif.
 
-Code : [`apps/api/src/modules/booking/booking.service.ts`](apps/api/src/modules/booking/booking.service.ts)
-
-```
-Patient A ──┐                                   Patient B ──┐
-            ▼                                               ▼
-   BEGIN                                           BEGIN
-   SELECT … FROM slots WHERE id=X FOR UPDATE  ✔    SELECT … FOR UPDATE   ⏳ attend A
-   EXISTS(RDV actif sur X) ? → non                          │
-   INSERT appointment + INSERT outbox_event                 │
-   COMMIT ──────────────────────────────────────────────────┤ verrou obtenu
-   201 Created                                     EXISTS(RDV actif sur X) ? → OUI
-                                                   ROLLBACK
-                                                   → alternatives les plus proches (hors transaction)
-                                                   409 { reason: ALREADY_BOOKED, alternatives: [...] }
-```
-
-| Couche | Rôle | Si elle tombe |
-|---|---|---|
-| Redis `SET NX PX` (pré-réservation de 5 min à la sélection) | UX : le patient ne remplit pas un formulaire pour un créneau déjà pris | Dégradation silencieuse : PostgreSQL reste l'arbitre |
-| `SELECT … FOR UPDATE` + `lock_timeout` | Sérialise les réservations d'un **même** créneau ; les autres créneaux ne se bloquent pas entre eux | — |
-| Contraintes `EXCLUDE` / `UNIQUE` | Filet de sécurité absolu, même si le code a un bug | — |
-
-En plus : une **clé d'idempotence** générée par le client. Un retry réseau ou un double tap renvoie
-le même RDV (200) au lieu d'un faux conflit. Un **outbox transactionnel** garantit qu'un événement
-`appointment.booked` est publié vers l'agenda live et les rappels J-1/H-2 si et seulement si le RDV
-a été commité.
-
-**UX mobile en cas de 409 :** la feuille de réservation reste ouverte. Le créneau perdu se grise avec
-une animation, et les alternatives apparaissent à sa place, la plus proche pré-sélectionnée. Le patient
-confirme en un tap. On ne fait **pas** d'Optimistic UI sur la réservation elle-même, parce qu'afficher
-« Réservé ✓ » puis le retirer serait pire. On l'utilise pour le reste : statuts de file d'attente,
-encaissements, notes.
+En cas de collision, l'API répond **409** avec les 3 créneaux libres les plus proches. Une clé d'idempotence rend
+les retries réseau sûrs. Un outbox transactionnel prépare le temps réel et les rappels J-1 / H-2.
 
 ## Tests
 
 ```bash
-pnpm install
-TEST_DATABASE_URL=postgres://user:pass@localhost:5432/medcine_test pnpm --filter @medcine/api test
+pnpm db:up                           # postgres-test + redis-test doivent tourner
+pnpm --filter @cura/api test         # unitaires + intégration
+pnpm --filter @cura/api test:unit    # sans Docker
 ```
 
-`apps/api/test/booking.concurrency.test.ts` lance 50 réservations simultanées sur le même créneau et
-vérifie qu'il y a exactement 1 gagnant, 49 rejets accompagnés d'alternatives, et 1 seule ligne en base.
+161 tests, dont :
+- 50 réservations simultanées sur le même créneau : exactement 1 gagnant ;
+- rejeu idempotent ;
+- rotation et vol de refresh token ;
+- CSRF, RBAC, XSS, rate limiting, en-têtes de sécurité ;
+- pagination sur 45 patients sans doublon ;
+- contrat Zod ⇄ PostgreSQL ;
+- réversibilité des migrations et détection de modification.
+
+## Feuille de route
+
+- [ ] File d'attente live et agenda temps réel (Socket.io, relais de l'outbox)
+- [ ] Caisse et facturation (tables prêtes : numérotation sans trou, factures immuables)
+- [ ] Rappels J-1 / H-2 (BullMQ sur Redis + Expo Push)
+- [ ] Application cabinet (React + Vite) et application mobile (Expo)
+- [ ] CI GitHub Actions (tests sur conteneurs de service)
