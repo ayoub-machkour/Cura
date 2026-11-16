@@ -1,154 +1,169 @@
 /**
- * Implémentation PostgreSQL du BookingRepository.
- * SQL explicite et paramétré : aucune magie d'ORM sur le chemin critique,
- * le plan d'exécution et les verrous posés sont lisibles directement.
+ * Accès aux rendez-vous et à l'outbox. SQL uniquement.
+ * Les violations de contraintes sont traduites en erreurs métier ICI : le service
+ * ne connaît pas les codes SQLSTATE ni les noms de contraintes.
  */
-import type { Queryable, Tx } from '../../infra/db/transaction';
-import type {
-  AppointmentRow,
-  AppointmentTypeRow,
-  BookingRepository,
-  LockedSlot,
-  NearestSlotsQuery,
-  NewAppointment,
-  OutboxEvent,
-  SlotRow,
-} from './booking.ports';
+import type { Pool } from 'pg';
+import type { AppointmentStatus } from '@cura/shared';
+import { type Db, isPgError, PgErrorCode } from '../../infra/db/transaction';
+import { DuplicateIdempotencyKeyError, PatientTimeConflictError, SlotUnavailableError } from './booking.errors';
 
-/** Statuts qui "occupent" un créneau — doit rester aligné avec les WHERE des contraintes SQL. */
-const ACTIVE_STATUS_SQL = `status NOT IN ('cancelled', 'no_show')`;
+export type BookingSourceValue = 'mobile' | 'desk' | 'phone';
 
-const APPOINTMENT_COLUMNS = `
-  id,
-  doctor_id           AS "doctorId",
-  patient_id          AS "patientId",
-  appointment_type_id AS "appointmentTypeId",
-  slot_id             AS "slotId",
-  starts_at           AS "startsAt",
-  ends_at             AS "endsAt",
-  status
-`;
+export interface AppointmentRecord {
+  id: string;
+  doctorId: string;
+  patientId: string;
+  appointmentTypeId: string;
+  slotId: string | null;
+  startsAt: Date;
+  endsAt: Date;
+  status: AppointmentStatus;
+  source: BookingSourceValue;
+}
 
-const SLOT_COLUMNS = `
-  s.id,
-  s.doctor_id AS "doctorId",
-  s.starts_at AS "startsAt",
-  s.ends_at   AS "endsAt"
-`;
+export interface NewAppointment {
+  doctorId: string;
+  patientId: string;
+  appointmentTypeId: string;
+  slotId: string;
+  startsAt: Date;
+  endsAt: Date;
+  source: BookingSourceValue;
+  idempotencyKey: string;
+  note?: string;
+}
 
-export class PgBookingRepository implements BookingRepository {
-  async lockSlot(tx: Tx, slotId: string): Promise<LockedSlot | null> {
-    // FOR UPDATE : la 2e transaction qui vise ce créneau ATTEND ici que la 1re
-    // ait commité (ou expire après lock_timeout). Elle relira alors la ligne à jour.
-    const { rows } = await tx.query<LockedSlot>(
-      `SELECT ${SLOT_COLUMNS},
-              s.status,
-              s.online_bookable AS "onlineBookable"
-         FROM slots s
-        WHERE s.id = $1
-          FOR UPDATE`,
-      [slotId],
-    );
-    return rows[0] ?? null;
+export interface OutboxEvent {
+  aggregateType: string;
+  aggregateId: string;
+  eventType: string;
+  payload: Record<string, unknown>;
+}
+
+const COLUMNS = `
+  id, doctor_id AS "doctorId", patient_id AS "patientId", appointment_type_id AS "appointmentTypeId",
+  slot_id AS "slotId", starts_at AS "startsAt", ends_at AS "endsAt", status, source`;
+
+export class BookingRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async insert(input: NewAppointment, tx: Db): Promise<AppointmentRecord> {
+    try {
+      const { rows } = await tx.query<AppointmentRecord>(
+        `INSERT INTO appointments
+           (doctor_id, patient_id, appointment_type_id, slot_id, starts_at, ends_at, source, idempotency_key, note)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING ${COLUMNS}`,
+        [
+          input.doctorId,
+          input.patientId,
+          input.appointmentTypeId,
+          input.slotId,
+          input.startsAt,
+          input.endsAt,
+          input.source,
+          input.idempotencyKey,
+          input.note ?? null,
+        ],
+      );
+      return rows[0]!;
+    } catch (err) {
+      if (!isPgError(err)) throw err;
+      switch (err.constraint) {
+        case 'uq_appointments_idempotency':
+          throw new DuplicateIdempotencyKeyError();
+        case 'ex_appointments_patient_overlap':
+          throw new PatientTimeConflictError();
+        case 'uq_appointments_active_slot':
+        case 'ex_appointments_doctor_overlap':
+          throw new SlotUnavailableError(input.slotId, 'ALREADY_BOOKED');
+      }
+      if (err.code === PgErrorCode.LockNotAvailable) throw new SlotUnavailableError(input.slotId, 'LOCK_CONTENTION');
+      throw err;
+    }
   }
 
-  async hasActiveAppointmentOnSlot(tx: Tx, slotId: string): Promise<boolean> {
-    // Requête DISTINCTE, exécutée APRÈS l'obtention du verrou : en READ COMMITTED,
-    // chaque instruction prend un nouveau snapshot et voit donc le RDV que la
-    // transaction concurrente vient de commiter.
-    const { rows } = await tx.query<{ exists: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1 FROM appointments WHERE slot_id = $1 AND ${ACTIVE_STATUS_SQL}
-       ) AS "exists"`,
-      [slotId],
-    );
-    return rows[0]?.exists ?? false;
-  }
-
-  async insertAppointment(tx: Tx, input: NewAppointment): Promise<AppointmentRow> {
-    const { rows } = await tx.query<AppointmentRow>(
-      `INSERT INTO appointments
-         (doctor_id, patient_id, appointment_type_id, slot_id,
-          starts_at, ends_at, source, idempotency_key, note)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING ${APPOINTMENT_COLUMNS}`,
-      [
-        input.doctorId,
-        input.patientId,
-        input.appointmentTypeId,
-        input.slotId,
-        input.startsAt,
-        input.endsAt,
-        input.source,
-        input.idempotencyKey,
-        input.note ?? null,
-      ],
-    );
-    const row = rows[0];
-    if (!row) throw new Error('INSERT … RETURNING returned no row');
-    return row;
-  }
-
-  async insertOutboxEvent(tx: Tx, event: OutboxEvent): Promise<void> {
-    await tx.query(
-      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
-       VALUES ($1, $2, $3, $4)`,
-      [event.aggregateType, event.aggregateId, event.eventType, JSON.stringify(event.payload)],
-    );
-  }
-
-  async findAppointmentType(db: Queryable, id: string): Promise<AppointmentTypeRow | null> {
-    const { rows } = await db.query<AppointmentTypeRow>(
-      `SELECT id,
-              duration_minutes AS "durationMinutes",
-              bookable_online  AS "bookableOnline",
-              is_active        AS "isActive"
-         FROM appointment_types
-        WHERE id = $1`,
-      [id],
-    );
-    return rows[0] ?? null;
-  }
-
-  async findByIdempotencyKey(db: Queryable, patientId: string, key: string): Promise<AppointmentRow | null> {
-    const { rows } = await db.query<AppointmentRow>(
-      `SELECT ${APPOINTMENT_COLUMNS}
-         FROM appointments
-        WHERE patient_id = $1 AND idempotency_key = $2`,
+  async findByIdempotencyKey(patientId: string, key: string): Promise<AppointmentRecord | null> {
+    const { rows } = await this.pool.query<AppointmentRecord>(
+      `SELECT ${COLUMNS} FROM appointments WHERE patient_id = $1 AND idempotency_key = $2`,
       [patientId, key],
     );
     return rows[0] ?? null;
   }
 
-  async findSlotById(db: Queryable, slotId: string): Promise<SlotRow | null> {
-    const { rows } = await db.query<SlotRow>(
-      `SELECT ${SLOT_COLUMNS} FROM slots s WHERE s.id = $1`,
-      [slotId],
-    );
+  async lockById(id: string, tx: Db): Promise<AppointmentRecord | null> {
+    const { rows } = await tx.query<AppointmentRecord>(`SELECT ${COLUMNS} FROM appointments WHERE id = $1 FOR UPDATE`, [id]);
     return rows[0] ?? null;
   }
 
-  async findNearestAvailableSlots(db: Queryable, q: NearestSlotsQuery): Promise<SlotRow[]> {
-    // Fenêtre de ±14 jours : la requête reste un range scan sur
-    // uq_slots_doctor_start (doctor_id, starts_at) au lieu de trier toute la table.
-    const { rows } = await db.query<SlotRow>(
-      `SELECT ${SLOT_COLUMNS}
-         FROM slots s
-        WHERE s.doctor_id = $1
-          AND s.status = 'open'
-          AND ($2::boolean = false OR s.online_bookable)
-          AND s.starts_at >= GREATEST($3::timestamptz, $4::timestamptz - interval '14 days')
-          AND s.starts_at <= $4::timestamptz + interval '14 days'
-          AND s.ends_at - s.starts_at >= make_interval(mins => $5::int)
-          AND NOT (s.id = ANY($6::uuid[]))
-          AND NOT EXISTS (
-                SELECT 1 FROM appointments a
-                 WHERE a.slot_id = s.id AND a.${ACTIVE_STATUS_SQL}
-              )
-        ORDER BY abs(extract(epoch FROM s.starts_at - $4::timestamptz)), s.starts_at
-        LIMIT $7`,
-      [q.doctorId, q.onlineOnly, q.notBefore, q.around, q.minDurationMinutes, q.excludeSlotIds, q.limit],
+  async markCancelled(id: string, reason: string | null, tx: Db): Promise<AppointmentRecord> {
+    const { rows } = await tx.query<AppointmentRecord>(
+      `UPDATE appointments
+          SET status = 'cancelled', cancelled_at = now(), cancel_reason = $2, version = version + 1
+        WHERE id = $1
+        RETURNING ${COLUMNS}`,
+      [id, reason],
+    );
+    return rows[0]!;
+  }
+
+  /** Keyset (starts_at, id) : à venir en ordre croissant, passés en ordre décroissant. */
+  async listForPatient(params: {
+    patientId: string;
+    scope: 'upcoming' | 'past';
+    now: Date;
+    limit: number;
+    after?: readonly [string, string];
+  }): Promise<AppointmentRecord[]> {
+    const upcoming = params.scope === 'upcoming';
+    const values: unknown[] = [params.patientId, params.now, params.limit + 1];
+    let keyset = '';
+    if (params.after) {
+      values.push(params.after[0], params.after[1]);
+      keyset = `AND (starts_at, id) ${upcoming ? '>' : '<'} ($4::timestamptz, $5::uuid)`;
+    }
+    const { rows } = await this.pool.query<AppointmentRecord>(
+      `SELECT ${COLUMNS} FROM appointments
+        WHERE patient_id = $1
+          AND starts_at ${upcoming ? '>=' : '<'} $2
+          ${keyset}
+        ORDER BY starts_at ${upcoming ? 'ASC' : 'DESC'}, id ${upcoming ? 'ASC' : 'DESC'}
+        LIMIT $3`,
+      values,
     );
     return rows;
+  }
+
+  /** Agenda d'un médecin (index ix_appointments_doctor_time). */
+  async listForDoctor(params: {
+    doctorId: string;
+    from: Date;
+    to: Date;
+    limit: number;
+    after?: readonly [string, string];
+  }): Promise<AppointmentRecord[]> {
+    const values: unknown[] = [params.doctorId, params.from, params.to, params.limit + 1];
+    let keyset = '';
+    if (params.after) {
+      values.push(params.after[0], params.after[1]);
+      keyset = `AND (starts_at, id) > ($5::timestamptz, $6::uuid)`;
+    }
+    const { rows } = await this.pool.query<AppointmentRecord>(
+      `SELECT ${COLUMNS} FROM appointments
+        WHERE doctor_id = $1 AND starts_at >= $2 AND starts_at < $3
+          ${keyset}
+        ORDER BY starts_at, id
+        LIMIT $4`,
+      values,
+    );
+    return rows;
+  }
+
+  async insertOutboxEvent(event: OutboxEvent, tx: Db): Promise<void> {
+    await tx.query(
+      `INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload) VALUES ($1, $2, $3, $4)`,
+      [event.aggregateType, event.aggregateId, event.eventType, JSON.stringify(event.payload)],
+    );
   }
 }
