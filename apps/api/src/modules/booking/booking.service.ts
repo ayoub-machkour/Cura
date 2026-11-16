@@ -40,6 +40,8 @@ export interface BookingConfig {
   minLeadMinutes: number;
   holdTtlSeconds: number;
   alternativesCount: number;
+  /** RDV à venir maximum par patient pour les réservations en ligne. */
+  maxActivePerPatient: number;
 }
 
 export interface BookCommand {
@@ -87,7 +89,12 @@ export const toAppointmentDto = (a: AppointmentRecord): AppointmentDto => ({
   completedAt: a.completedAt?.toISOString() ?? null,
 });
 
-const CANCELLABLE = new Set(['scheduled', 'confirmed']);
+/**
+ * Statuts annulables. Le personnel peut aussi annuler une visite en salle d'attente
+ * (patient reparti sans consulter) : sinon elle resterait bloquée indéfiniment.
+ */
+const CANCELLABLE_BY_PATIENT = new Set(['scheduled', 'confirmed']);
+const CANCELLABLE_BY_STAFF = new Set(['scheduled', 'confirmed', 'checked_in']);
 
 export class BookingService {
   constructor(private readonly deps: Deps) {}
@@ -148,6 +155,18 @@ export class BookingService {
 
           // Verrou acquis : ce contrôle voit l'état réellement commité.
           if (await slots.hasActiveAppointment(slot.id, db)) throw new SlotUnavailableError(slot.id, 'ALREADY_BOOKED');
+
+          if (!(await appointments.lockPatient(cmd.patientId, db))) throw new NotFoundError('Patient');
+          // Anti-accaparement : limite de RDV à venir pour les réservations en ligne (le secrétariat n'est pas limité).
+          if (cmd.source === 'mobile') {
+            const upcoming = await appointments.countUpcomingActive(cmd.patientId, this.deps.clock.now(), db);
+            if (upcoming >= config.maxActivePerPatient) {
+              throw new BusinessRuleError(
+                'BOOKING_LIMIT_REACHED',
+                `Vous avez déjà ${upcoming} rendez-vous à venir (maximum ${config.maxActivePerPatient}). Annulez-en un ou contactez le cabinet.`,
+              );
+            }
+          }
 
           const appointment = await appointments.insert(
             {
@@ -212,7 +231,8 @@ export class BookingService {
       const appt = await appointments.lockById(appointmentId, db);
       // Un patient qui vise le RDV d'un autre reçoit 404 (pas 403) : on ne révèle pas son existence.
       if (!appt || (principal.role === 'patient' && appt.patientId !== principal.pid)) throw new NotFoundError('Rendez-vous');
-      if (!CANCELLABLE.has(appt.status)) {
+      const cancellable = principal.role === 'patient' ? CANCELLABLE_BY_PATIENT : CANCELLABLE_BY_STAFF;
+      if (!cancellable.has(appt.status)) {
         throw new BusinessRuleError('NOT_CANCELLABLE', `Un rendez-vous au statut « ${appt.status} » ne peut pas être annulé`);
       }
       if (principal.role === 'patient' && appt.startsAt <= clock.now()) {

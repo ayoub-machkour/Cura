@@ -6,7 +6,7 @@
 import type { Pool } from 'pg';
 import type { AppointmentStatus } from '@cura/shared';
 import { type Db, isPgError, PgErrorCode } from '../../infra/db/transaction';
-import { ConflictError } from '../../common/errors';
+import { ConflictError, UnauthorizedError } from '../../common/errors';
 import { DuplicateIdempotencyKeyError, PatientTimeConflictError, SlotUnavailableError } from './booking.errors';
 
 export type BookingSourceValue = 'mobile' | 'desk' | 'phone';
@@ -72,6 +72,14 @@ const TIMESTAMP_FOR_STATUS: Partial<Record<AppointmentStatus, string>> = {
   no_show: 'no_show_at',
 };
 
+/** Un patient déjà présent dans une file d'attente ne peut pas y entrer une seconde fois. */
+function translateQueueConflict(err: unknown): unknown {
+  if (isPgError(err) && err.constraint === 'uq_appointments_patient_in_queue') {
+    return new ConflictError('PATIENT_ALREADY_IN_QUEUE', 'Ce patient est déjà en salle d’attente ou en consultation');
+  }
+  return err;
+}
+
 export class BookingRepository {
   constructor(private readonly pool: Pool) {}
 
@@ -111,6 +119,26 @@ export class BookingRepository {
     }
   }
 
+  /**
+   * Verrouille le dossier patient : sérialise les réservations simultanées d'un MÊME patient
+   * (sinon 5 requêtes parallèles compteraient toutes « 0 RDV » et dépasseraient la limite).
+   * Ordre des verrous toujours créneau → patient : aucun interblocage possible.
+   */
+  async lockPatient(patientId: string, tx: Db): Promise<boolean> {
+    const { rowCount } = await tx.query(`SELECT 1 FROM patients WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, [patientId]);
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** RDV à venir encore actifs (réservés ou confirmés) d'un patient. */
+  async countUpcomingActive(patientId: string, now: Date, tx: Db): Promise<number> {
+    const { rows } = await tx.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM appointments
+        WHERE patient_id = $1 AND starts_at > $2 AND status IN ('scheduled', 'confirmed')`,
+      [patientId, now],
+    );
+    return rows[0]?.n ?? 0;
+  }
+
   async findByIdempotencyKey(patientId: string, key: string): Promise<AppointmentRecord | null> {
     const { rows } = await this.pool.query<AppointmentRecord>(
       `SELECT ${COLUMNS} FROM appointments WHERE patient_id = $1 AND idempotency_key = $2`,
@@ -142,6 +170,27 @@ export class BookingRepository {
     return rows[0] ?? null;
   }
 
+  /** Visite sans rendez-vous : créée directement « arrivée », sans créneau. */
+  async insertWalkIn(
+    input: { doctorId: string; patientId: string; appointmentTypeId: string; arrivedAt: Date; durationMinutes: number; note?: string },
+    tx: Db,
+  ): Promise<AppointmentRecord> {
+    try {
+      const { rows } = await tx.query<AppointmentRecord>(
+        `INSERT INTO appointments
+           (doctor_id, patient_id, appointment_type_id, slot_id, starts_at, ends_at, status, source,
+            idempotency_key, checked_in_at, note)
+         VALUES ($1, $2, $3, NULL, $4, $4::timestamptz + make_interval(mins => $5), 'checked_in', 'desk',
+                 gen_random_uuid(), $4, $6)
+         RETURNING ${COLUMNS}`,
+        [input.doctorId, input.patientId, input.appointmentTypeId, input.arrivedAt, input.durationMinutes, input.note ?? null],
+      );
+      return rows[0]!;
+    } catch (err) {
+      throw translateQueueConflict(err);
+    }
+  }
+
   /** Applique un changement de statut, pose l'horodatage associé et incrémente la version. */
   async applyStatus(id: string, to: AppointmentStatus, at: Date, tx: Db): Promise<AppointmentRecord> {
     const timestampColumn = TIMESTAMP_FOR_STATUS[to];
@@ -159,7 +208,7 @@ export class BookingRepository {
       if (isPgError(err) && err.constraint === 'uq_appointments_one_consultation_per_doctor') {
         throw new ConflictError('DOCTOR_BUSY', 'Le médecin a déjà un patient en consultation');
       }
-      throw err;
+      throw translateQueueConflict(err);
     }
   }
 
@@ -168,11 +217,19 @@ export class BookingRepository {
     change: { appointmentId: string; from: AppointmentStatus | null; to: AppointmentStatus; actorUserId: string | null },
     tx: Db,
   ): Promise<void> {
-    await tx.query(
-      `INSERT INTO appointment_status_changes (appointment_id, from_status, to_status, actor_user_id)
-       VALUES ($1, $2, $3, $4)`,
-      [change.appointmentId, change.from, change.to, change.actorUserId],
-    );
+    try {
+      await tx.query(
+        `INSERT INTO appointment_status_changes (appointment_id, from_status, to_status, actor_user_id)
+         VALUES ($1, $2, $3, $4)`,
+        [change.appointmentId, change.from, change.to, change.actorUserId],
+      );
+    } catch (err) {
+      // Jeton encore valide d'un compte supprimé entre-temps : la session n'est plus légitime.
+      if (isPgError(err) && err.constraint === 'appointment_status_changes_actor_user_id_fkey') {
+        throw new UnauthorizedError('SESSION_INVALID', 'Session invalide, veuillez vous reconnecter');
+      }
+      throw err;
+    }
   }
 
   async markCancelled(id: string, reason: string | null, tx: Db): Promise<AppointmentRecord> {
