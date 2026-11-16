@@ -194,8 +194,11 @@ describe('GET /appointments/me et /appointments (agenda)', () => {
     await book(patient, { slotId: slots[0] });
     const past = await slotAt(-24 * 60);
     await sql(
-      `INSERT INTO appointments (doctor_id, patient_id, appointment_type_id, slot_id, starts_at, ends_at, source, idempotency_key, status)
-       SELECT doctor_id, $1, $2, id, starts_at, ends_at, 'desk', gen_random_uuid(), 'completed' FROM slots WHERE id = $3`,
+      `INSERT INTO appointments (doctor_id, patient_id, appointment_type_id, slot_id, starts_at, ends_at, source, idempotency_key, status,
+                                checked_in_at, consultation_started_at, completed_at)
+       SELECT doctor_id, $1, $2, id, starts_at, ends_at, 'desk', gen_random_uuid(), 'completed',
+              starts_at - interval '5 minutes', starts_at, ends_at
+         FROM slots WHERE id = $3`,
       [patient.user.patientId, typeId, past],
     );
     const upcoming = (await get(patient, '/api/v1/appointments/me')).json().data;
