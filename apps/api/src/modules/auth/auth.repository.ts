@@ -70,6 +70,9 @@ export class AuthRepository {
       if (isConstraintViolation(err, 'uq_users_email')) {
         throw new ConflictError('EMAIL_TAKEN', 'Un compte existe déjà avec cet email');
       }
+      if (isConstraintViolation(err, 'uq_users_patient')) {
+        throw new ConflictError('PATIENT_ALREADY_HAS_ACCOUNT', 'Ce dossier patient est déjà rattaché à un compte');
+      }
       if (isConstraintViolation(err, 'uq_users_doctor')) {
         throw new ConflictError('DOCTOR_ALREADY_LINKED', 'Ce médecin possède déjà un compte');
       }

@@ -3,19 +3,23 @@
  * Chaque transition : verrou de ligne + contrôle de version + machine à états +
  * historique + événement outbox, dans UNE transaction.
  */
-import type { AppointmentDto } from '@cura/shared';
+import type { AppointmentDto, CreateWalkInRequest } from '@cura/shared';
 import type { Clock } from '../../common/clock';
-import { BusinessRuleError, ConflictError, NotFoundError } from '../../common/errors';
+import { BusinessRuleError, ConflictError, ForbiddenError, NotFoundError } from '../../common/errors';
 import type { AuthPrincipal } from '../../common/security/tokens';
 import type { TransactionManager } from '../../infra/db/transaction';
 import type { AppLogger } from '../../infra/logger';
+import type { AppointmentTypesRepository } from '../appointment-types/appointment-types.repository';
 import type { BookingRepository, LockedAppointment } from '../booking/booking.repository';
+import type { DoctorsRepository } from '../doctors/doctors.repository';
 import { toAppointmentDto } from '../booking/booking.service';
 import { checkTransition, TRANSITIONS, type VisitAction } from './visit-state-machine';
 
 interface Deps {
   tx: TransactionManager;
   appointments: BookingRepository;
+  doctors: DoctorsRepository;
+  types: AppointmentTypesRepository;
   clock: Clock;
   logger: AppLogger;
 }
@@ -76,6 +80,46 @@ export class VisitsService {
       'appointment status changed',
     );
     return toAppointmentDto(after);
+  }
+
+  /**
+   * Patient sans rendez-vous : la visite entre directement en salle d'attente (ordre d'arrivée).
+   * Elle n'occupe pas l'agenda — c'est la file qui la gère.
+   */
+  async registerWalkIn(input: CreateWalkInRequest, principal: AuthPrincipal): Promise<AppointmentDto> {
+    const { tx, appointments, clock, logger, doctors, types } = this.deps;
+    if (principal.role === 'doctor' && principal.did !== input.doctorId) {
+      throw new ForbiddenError('Un médecin n’enregistre des patients que dans sa propre file');
+    }
+    const now = clock.now();
+
+    const created = await tx.run(async (db) => {
+      if (!(await doctors.findById(input.doctorId, db))) throw new NotFoundError('Médecin');
+      const type = await types.findById(input.appointmentTypeId, db);
+      if (!type || !type.isActive) throw new NotFoundError('Motif');
+      if (!(await appointments.lockPatient(input.patientId, db))) throw new NotFoundError('Patient');
+
+      const visit = await appointments.insertWalkIn(
+        {
+          doctorId: input.doctorId,
+          patientId: input.patientId,
+          appointmentTypeId: type.id,
+          arrivedAt: now,
+          durationMinutes: type.durationMinutes,
+          note: input.note,
+        },
+        db,
+      );
+      await appointments.insertStatusChange({ appointmentId: visit.id, from: null, to: 'checked_in', actorUserId: principal.sub }, db);
+      await appointments.insertOutboxEvent(
+        { aggregateType: 'appointment', aggregateId: visit.id, eventType: 'appointment.booked', payload: { ...toAppointmentDto(visit) } },
+        db,
+      );
+      return visit;
+    });
+
+    logger.info({ event: 'visit.walk_in', appointmentId: created.id, doctorId: input.doctorId, actorId: principal.sub }, 'walk-in registered');
+    return toAppointmentDto(created);
   }
 
   private assertVersion(appt: LockedAppointment, expectedVersion?: number): void {

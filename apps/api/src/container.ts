@@ -25,6 +25,8 @@ import { DoctorsRepository } from './modules/doctors/doctors.repository';
 import { DoctorsService } from './modules/doctors/doctors.service';
 import { PatientsRepository } from './modules/patients/patients.repository';
 import { PatientsService } from './modules/patients/patients.service';
+import { OnboardingRepository } from './modules/onboarding/onboarding.repository';
+import { OnboardingService } from './modules/onboarding/onboarding.service';
 import { QueueRepository } from './modules/queue/queue.repository';
 import { QueueService } from './modules/queue/queue.service';
 import { OutboxRepository } from './modules/realtime/outbox.repository';
@@ -55,6 +57,7 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
   const bookingRepo = new BookingRepository(pool);
   const queueRepo = new QueueRepository(pool);
   const outboxRepo = new OutboxRepository(pool);
+  const onboardingRepo = new OnboardingRepository(pool);
 
   // Sécurité
   const hasher = overrides.hasher ?? new ScryptPasswordHasher();
@@ -67,7 +70,7 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
   const holds = overrides.holds ?? new RedisSlotHoldStore(redis);
 
   // Services (logique métier)
-  const services = {
+  const coreServices = {
     auth: new AuthService({
       tx,
       auth: authRepo,
@@ -101,10 +104,31 @@ export function createContainer(env: Env, logger: AppLogger, overrides: Containe
         minLeadMinutes: env.BOOKING_MIN_LEAD_MINUTES,
         holdTtlSeconds: env.BOOKING_HOLD_TTL_SECONDS,
         alternativesCount: 3,
+        maxActivePerPatient: env.BOOKING_MAX_ACTIVE_PER_PATIENT,
       },
     }),
-    visits: new VisitsService({ tx, appointments: bookingRepo, clock, logger: logger.child({ module: 'visits' }) }),
+    visits: new VisitsService({
+      tx,
+      appointments: bookingRepo,
+      doctors: doctorsRepo,
+      types: typesRepo,
+      clock,
+      logger: logger.child({ module: 'visits' }),
+    }),
     queue: new QueueService(queueRepo, clock),
+  };
+  // Services qui dépendent d'autres services.
+  const services = {
+    ...coreServices,
+    onboarding: new OnboardingService({
+      tx,
+      onboarding: onboardingRepo,
+      users: authRepo,
+      auth: coreServices.auth,
+      hasher,
+      clock,
+      logger: logger.child({ module: 'onboarding' }),
+    }),
   };
 
   return {

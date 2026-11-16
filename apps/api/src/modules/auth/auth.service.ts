@@ -70,7 +70,7 @@ export class AuthService {
       return this.deps.auth.createUser({ email: input.email, passwordHash, role: 'patient', patientId: patient.id }, db);
     });
     this.deps.logger.info({ event: 'auth.registered', userId: user.id }, 'patient registered');
-    return this.openSession(user, ctx);
+    return this.startSession(user, ctx);
   }
 
   async createStaffUser(input: CreateStaffUserRequest, actorId: string): Promise<UserDto> {
@@ -112,7 +112,7 @@ export class AuthService {
     const rehash = hasher.needsRehash(user.passwordHash) ? await hasher.hash(password) : undefined;
     await auth.recordLoginSuccess(user.id, rehash);
     logger.info({ event: 'auth.login', userId: user.id, role: user.role, ip: ctx.ip }, 'login succeeded');
-    return this.openSession(user, ctx);
+    return this.startSession(user, ctx);
   }
 
   /**
@@ -168,7 +168,8 @@ export class AuthService {
     return toUserDto(user);
   }
 
-  private async openSession(user: UserRecord, ctx: ClientContext): Promise<Session> {
+  /** Ouvre une session (cookies posés par la route) pour un compte authentifié par un autre moyen (ex. invitation). */
+  async startSession(user: UserRecord, ctx: ClientContext): Promise<Session> {
     const next = await this.issueRefreshToken(user.id, randomUUID(), ctx);
     return this.buildSession(user, next.raw, next.expiresAt);
   }

@@ -7,7 +7,7 @@
  */
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
 import type { Role } from '@cura/shared';
-import { AppointmentDto, AppointmentTransitionRequest, ErrorResponse, IdParams } from '@cura/shared';
+import { AppointmentDto, AppointmentTransitionRequest, CreateWalkInRequest, ErrorResponse, IdParams } from '@cura/shared';
 import { principalOf } from '../../http/auth-guard';
 import type { VisitAction } from './visit-state-machine';
 import type { VisitsService } from './visits.service';
@@ -37,4 +37,19 @@ export const visitsRoutes =
         },
       }, async (req) => service.transition(req.params.id, route.action, principalOf(req), req.body?.expectedVersion));
     }
+  };
+
+/** Patient sans rendez-vous : secrétariat, admin, médecin (sa propre file). */
+export const walkInRoutes =
+  (service: VisitsService): FastifyPluginAsyncZod =>
+  async (app) => {
+    app.post('/walk-ins', {
+      onRequest: [app.authenticate, app.authorize('secretary', 'admin', 'doctor')],
+      schema: {
+        tags: ['visits'],
+        summary: 'Patient sans rendez-vous : entrée directe en salle d’attente',
+        body: CreateWalkInRequest,
+        response: { 201: AppointmentDto, ...errors },
+      },
+    }, async (req, reply) => reply.code(201).send(await service.registerWalkIn(req.body, principalOf(req))));
   };

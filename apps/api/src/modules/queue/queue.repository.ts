@@ -18,6 +18,7 @@ export interface QueueRow {
   version: number;
   checkedInAt: Date | null;
   consultationStartedAt: Date | null;
+  slotId: string | null;
 }
 
 /** Nombre maximal de RDV d'un médecin sur une journée : borne de sécurité, jamais atteinte en pratique. */
@@ -47,7 +48,7 @@ export class QueueRepository {
               p.first_name AS "patientFirstName", p.last_name AS "patientLastName",
               a.appointment_type_id AS "appointmentTypeId", a.doctor_id AS "doctorId",
               a.starts_at AS "startsAt", a.status, a.version,
-              a.checked_in_at AS "checkedInAt", a.consultation_started_at AS "consultationStartedAt"
+              a.checked_in_at AS "checkedInAt", a.consultation_started_at AS "consultationStartedAt", a.slot_id AS "slotId"
          FROM day
          JOIN appointments a
            ON a.doctor_id = $1

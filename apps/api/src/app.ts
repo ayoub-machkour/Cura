@@ -3,7 +3,7 @@
  * réutilisée telle quelle par les tests via `app.inject()`.
  */
 import { randomUUID } from 'node:crypto';
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
 import { z } from 'zod';
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from 'fastify-type-provider-zod';
 import type { Container } from './container';
@@ -17,10 +17,11 @@ import { bookingRoutes } from './modules/booking/booking.routes';
 import { doctorsRoutes } from './modules/doctors/doctors.routes';
 import { healthRoutes } from './modules/health/health.routes';
 import { patientsRoutes } from './modules/patients/patients.routes';
+import { onboardingRoutes } from './modules/onboarding/onboarding.routes';
 import { queueRoutes } from './modules/queue/queue.routes';
 import { realtimeGateway } from './modules/realtime/realtime.gateway';
 import { slotsRoutes } from './modules/slots/slots.routes';
-import { visitsRoutes } from './modules/visits/visits.routes';
+import { visitsRoutes, walkInRoutes } from './modules/visits/visits.routes';
 
 export const API_PREFIX = '/api/v1';
 
@@ -42,7 +43,7 @@ export async function buildApp(c: Container) {
       const incoming = req.headers['x-request-id'];
       return typeof incoming === 'string' && REQUEST_ID_RE.test(incoming) ? incoming : randomUUID();
     },
-    requestIdLogLabel: 'reqId',
+    logController: new LogController({ requestIdLogLabel: 'reqId' }),
     // IP client réelle derrière Nginx (rate limit, logs) : on ne fait confiance qu'aux N premiers sauts.
     trustProxy: (_address: string, hop: number) => hop < env.TRUST_PROXY_HOPS,
     bodyLimit: 100 * 1024,
@@ -51,6 +52,17 @@ export async function buildApp(c: Container) {
   // Toute route déclarant un schéma Zod est validée (entrée) et sérialisée (sortie) avec lui.
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  // Beaucoup de clients (axios, fetch avec en-têtes par défaut) envoient « content-type: application/json »
+  // avec un corps vide sur un POST sans données : on le traite comme « pas de corps ».
+  // Le reste passe par l'analyseur JSON sécurisé de Fastify (rejet de __proto__ / constructor).
+  const secureJsonParser = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    const text = typeof body === 'string' ? body : body.toString('utf8');
+    if (text.trim() === '') return done(null, null);
+    secureJsonParser(req, text, done);
+  });
 
   app.addHook('onSend', async (req, reply) => {
     reply.header('x-request-id', req.id);
@@ -93,7 +105,9 @@ export async function buildApp(c: Container) {
       await v1.register(slotsRoutes(c.services.slots));
       await v1.register(bookingRoutes(c.services.booking));
       await v1.register(visitsRoutes(c.services.visits));
+      await v1.register(walkInRoutes(c.services.visits));
       await v1.register(queueRoutes(c.services.queue));
+      await v1.register(onboardingRoutes(c.services.onboarding, cookieConfig, env.RATE_LIMIT_AUTH_MAX));
     },
     { prefix: API_PREFIX },
   );

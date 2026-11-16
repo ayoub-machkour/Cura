@@ -22,6 +22,7 @@ const toEntry = (row: QueueRow, now: Date, position: number | null): QueueEntryD
   consultationStartedAt: row.consultationStartedAt?.toISOString() ?? null,
   position,
   isLate: (row.status === 'scheduled' || row.status === 'confirmed') && row.startsAt < now,
+  isWalkIn: row.slotId === null,
 });
 
 /** Salle d'attente triée par heure d'arrivée (départage stable par id). */
