@@ -1,0 +1,5 @@
+$kind: http-request
+name: 'Check in patient (arrival)'
+method: POST
+url: '{{base_url}}/appointments/{{appointment_id}}/check-in'
+order: 2000

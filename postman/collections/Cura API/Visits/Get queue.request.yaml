@@ -1,0 +1,5 @@
+$kind: http-request
+name: "Get today's queue (staff)"
+method: GET
+url: '{{base_url}}/queue?doctorId={{doctor_id}}'
+order: 6000

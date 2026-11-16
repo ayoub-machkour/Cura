@@ -1,0 +1,5 @@
+$kind: http-request
+name: 'Get my queue position'
+method: GET
+url: '{{base_url}}/appointments/{{appointment_id}}/queue-position'
+order: 7000

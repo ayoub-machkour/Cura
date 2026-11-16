@@ -51,7 +51,7 @@ cura/
 └── docker-compose.prod.yml         production
 ```
 
-Modules : `auth`, `patients`, `doctors`, `appointment-types`, `slots`, `booking`, `health`.
+Modules : `auth`, `patients`, `doctors`, `appointment-types`, `slots`, `booking`, `visits` (parcours de visite), `queue` (file d’attente), `realtime` (Socket.io + relais outbox), `health`.
 
 ## Bases de données : dev, test et prod séparées
 
@@ -138,6 +138,9 @@ Documentation interactive sur **`/docs`** (OpenAPI 3.1 générée depuis les sch
 | POST | `/api/v1/appointments` (201 · 200 rejeu · 409 + alternatives) | patient, personnel |
 | POST | `/api/v1/appointments/:id/cancel` | propriétaire, personnel |
 | GET | `/api/v1/appointments/me` · `/api/v1/appointments` (agenda) | patient · personnel |
+| POST | `/api/v1/appointments/:id/confirm` · `/check-in` · `/start` · `/complete` · `/no-show` | selon l’action (voir « File d’attente ») |
+| GET | `/api/v1/queue?doctorId=` (file du jour) | personnel (médecin : sa file) |
+| GET | `/api/v1/appointments/:id/queue-position` | propriétaire, personnel |
 | GET | `/health/live` · `/health/ready` | public |
 
 **Pagination** par curseur (keyset) : `?limit=20&cursor=…` renvoie `{ data, page: { limit, nextCursor, hasMore } }`.
@@ -154,6 +157,43 @@ Trois niveaux de protection, détaillés dans [`booking.service.ts`](apps/api/sr
 En cas de collision, l'API répond **409** avec les 3 créneaux libres les plus proches. Une clé d'idempotence rend
 les retries réseau sûrs. Un outbox transactionnel prépare le temps réel et les rappels J-1 / H-2.
 
+## File d'attente et temps réel
+
+**Parcours de visite.** Il est implémenté dans [`visit-state-machine.ts`](apps/api/src/modules/visits/visit-state-machine.ts), un module pur testé sur toutes les combinaisons action × statut :
+
+```
+scheduled ─confirm─▶ confirmed ─check-in─▶ checked_in ─start─▶ in_consultation ─complete─▶ completed
+     └──────────────────┴──no-show──▶ no_show            (annulation : scheduled / confirmed uniquement)
+```
+
+| Action | Rôles | Règle |
+|---|---|---|
+| `confirm` | patient (ses RDV), secrétariat, admin | RDV futur |
+| `check-in` | secrétariat, admin, médecin (son agenda) | le jour du RDV, dans le fuseau du médecin |
+| `start` / `complete` | médecin (son agenda), admin | un seul patient en consultation par médecin |
+| `no-show` | secrétariat, admin, médecin (son agenda) | pas avant l'heure du RDV |
+
+Chaque transition s'exécute dans **une seule transaction**, qui :
+- verrouille la ligne du RDV ;
+- contrôle la version (`expectedVersion` optionnel → 409 `STALE_VERSION`) ;
+- applique la machine à états ;
+- écrit l'historique et l'événement outbox.
+
+La base garantit en plus :
+- l'horodatage obligatoire de chaque statut et une chronologie cohérente ;
+- **une seule consultation en cours par médecin** (index unique, testé en concurrence) ;
+- un historique `appointment_status_changes` **en ajout seul** (trigger).
+
+**File du jour.** `GET /api/v1/queue?doctorId=` renvoie la consultation en cours, la salle d'attente (premier arrivé, premier appelé, avec la position) et les patients attendus (retards signalés). Le patient obtient sa place avec `GET /appointments/:id/queue-position`.
+
+**Temps réel.** Socket.io sur `/socket.io`, contrat dans [`realtime.ts`](packages/shared/src/schemas/realtime.ts) :
+- Authentification par le cookie httpOnly de session (ou `auth.token` pour un client natif). La connexion est coupée à l'expiration du jeton (événement `session.expired`).
+- **Origin vérifiée** avant la mise à niveau WebSocket, contre le *Cross-Site WebSocket Hijacking*.
+- Salles : un patient reçoit uniquement ses propres RDV ; un médecin reçoit son agenda ; le secrétariat émet `subscribe { doctorId }` (50 agendas maximum par connexion).
+- Événements : `appointment.booked`, `appointment.cancelled`, `appointment.status_changed`.
+- Livraison **au moins une fois** : dédupliquer par `id`, comparer `data.version`.
+- Le relais de l'outbox lit les événements avec `FOR UPDATE SKIP LOCKED`, sans doublon même avec plusieurs instances. L'adaptateur Redis relie les instances entre elles, et les événements publiés sont purgés après `OUTBOX_RETENTION_DAYS`.
+
 ## Tests
 
 ```bash
@@ -162,7 +202,7 @@ pnpm --filter @cura/api test         # unitaires + intégration
 pnpm --filter @cura/api test:unit    # sans Docker
 ```
 
-220 tests (97 % des lignes couvertes, `pnpm --filter @cura/api test:coverage`), dont :
+294 tests (97,8 % des lignes couvertes, `pnpm --filter @cura/api test:coverage`), dont :
 - 50 réservations simultanées sur le même créneau : exactement 1 gagnant ;
 - rejeu idempotent ;
 - rotation et vol de refresh token ;
@@ -171,11 +211,13 @@ pnpm --filter @cura/api test:unit    # sans Docker
 - contrat Zod ⇄ PostgreSQL ;
 - réversibilité des migrations et détection de modification ;
 - chaque route testée pour chaque rôle et chaque règle métier (créneau bloqué, délai de prévenance, motif trop long…) ;
-- résilience : base indisponible (500 sans fuite, health 503), verrou bloqué (409 au lieu d’une attente infinie).
+- résilience : base indisponible (500 sans fuite, health 503), verrou bloqué (409 au lieu d’une attente infinie) ;
+- parcours de visite (35 combinaisons action × statut), un seul patient en consultation même en concurrence ;
+- temps réel de bout en bout (vraies connexions WebSocket) : authentification, Origin, isolation des salles, expiration de session, relais multi-instance sans doublon.
 
 ## Feuille de route
 
-- [ ] File d'attente live et agenda temps réel (Socket.io, relais de l'outbox)
+- [x] File d'attente live et agenda temps réel (Socket.io, relais de l'outbox)
 - [ ] Caisse et facturation (tables prêtes : numérotation sans trou, factures immuables)
 - [ ] Rappels J-1 / H-2 (BullMQ sur Redis + Expo Push)
 - [ ] Application cabinet (React + Vite) et application mobile (Expo)

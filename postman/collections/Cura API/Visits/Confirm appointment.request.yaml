@@ -1,0 +1,5 @@
+$kind: http-request
+name: 'Confirm appointment'
+method: POST
+url: '{{base_url}}/appointments/{{appointment_id}}/confirm'
+order: 1000

@@ -1,0 +1,19 @@
+$kind: collection
+name: Visits & queue
+description: |-
+  Visit workflow and live waiting room.
+
+  `scheduled → confirmed → checked_in → in_consultation → completed` (or `no_show`).
+
+  | Action | Roles |
+  |--------|-------|
+  | confirm | patient (own), secretary, admin |
+  | check-in | secretary, admin, doctor (own agenda) |
+  | start / complete | doctor (own agenda), admin |
+  | no-show | secretary, admin, doctor (own agenda) |
+
+  Optional body `{ "expectedVersion": n }`: the call fails with 409 `STALE_VERSION` if the
+  appointment changed in the meantime (two receptionists acting at once).
+
+  Real-time updates: Socket.io on `{{host}}/socket.io` (see README) — not testable from Postman HTTP requests.
+order: 7500

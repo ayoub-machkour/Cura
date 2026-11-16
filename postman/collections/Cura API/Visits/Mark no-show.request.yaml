@@ -1,0 +1,5 @@
+$kind: http-request
+name: 'Mark no-show'
+method: POST
+url: '{{base_url}}/appointments/{{appointment_id}}/no-show'
+order: 5000
