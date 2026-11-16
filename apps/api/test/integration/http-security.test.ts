@@ -97,6 +97,25 @@ describe('validation des entrées (Zod) et format d’erreur', () => {
     expect(xml.statusCode).toBe(415);
   });
 
+  it('corps vide avec content-type JSON (axios, fetch) : traité comme « pas de corps »', async () => {
+    const patient = await registerPatient(ctx.app);
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: { ...as(patient), 'content-type': 'application/json' },
+      payload: '',
+    });
+    expect(res.statusCode).toBe(204);
+  });
+
+  it('rejette la pollution de prototype (__proto__ / constructor) dans le JSON', async () => {
+    for (const payload of ['{"email":"a@b.co","password":"x","__proto__":{"isAdmin":true}}', '{"constructor":{"prototype":{"isAdmin":true}}}']) {
+      const res = await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/login', headers: { 'content-type': 'application/json' }, payload });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(({} as Record<string, unknown>).isAdmin).toBeUndefined();
+  });
+
   it('rejette un corps trop volumineux', async () => {
     const res = await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: 'a@b.co', password: 'x'.repeat(200_000) } });
     expect(res.statusCode).toBe(413);

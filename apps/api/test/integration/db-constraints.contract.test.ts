@@ -82,8 +82,10 @@ describe('texte libre anti-XSS (domaine safe_text)', () => {
     );
     const { rows: p } = await pool.query(`INSERT INTO patients (first_name, last_name, birth_date, phone) VALUES ('A','B','1990-01-01','+212600000000') RETURNING id`);
     return dbAccepts(
-      `INSERT INTO appointments (doctor_id, patient_id, appointment_type_id, starts_at, ends_at, source, idempotency_key, note)
-       VALUES ($1, $2, $3, now() + interval '1 day', now() + interval '1 day 20 minutes', 'desk', gen_random_uuid(), $4)`,
+      // Visite walk-in valide (sans créneau, déjà arrivée) : seule la note varie.
+      `INSERT INTO appointments (doctor_id, patient_id, appointment_type_id, starts_at, ends_at, source, idempotency_key, note,
+                                status, checked_in_at)
+       VALUES ($1, $2, $3, now(), now() + interval '20 minutes', 'desk', gen_random_uuid(), $4, 'checked_in', now())`,
       [doctorId, p[0].id, rows[0].id, note],
     );
   };

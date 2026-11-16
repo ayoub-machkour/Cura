@@ -195,9 +195,22 @@ describe('règles et refus', () => {
     expect((await act(secretary, randomUUID(), 'check-in')).statusCode).toBe(404);
   });
 
-  it('un RDV en salle d’attente ne peut plus être annulé', async () => {
+  it('patient reparti de la salle d’attente : le personnel peut clôturer la visite, le patient non', async () => {
+    const patient = await registerPatient(ctx.app);
+    const id = await bookSlot(0, patient.user.patientId!);
+    await act(secretary, id, 'check-in');
+    const byPatient = await ctx.app.inject({ method: 'POST', url: `/api/v1/appointments/${id}/cancel`, headers: as(patient) });
+    expect(byPatient.statusCode).toBe(422);
+    const byStaff = await ctx.app.inject({ method: 'POST', url: `/api/v1/appointments/${id}/cancel`, headers: as(secretary), payload: { reason: 'Reparti avant la consultation' } });
+    expect(byStaff.json().status).toBe('cancelled');
+    // Libéré de la file : il pourra être enregistré lors d'une prochaine visite.
+    expect((await queue(secretary)).json().waiting).toEqual([]);
+  });
+
+  it('une consultation en cours ne peut pas être annulée', async () => {
     const id = await bookSlot(0);
     await act(secretary, id, 'check-in');
+    await act(doctor, id, 'start');
     const res = await ctx.app.inject({ method: 'POST', url: `/api/v1/appointments/${id}/cancel`, headers: as(secretary) });
     expect(res.statusCode).toBe(422);
   });

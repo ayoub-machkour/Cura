@@ -77,6 +77,86 @@ describe('concurrence', () => {
     expect(results.filter((r) => !r.replayed)).toHaveLength(1);
   });
 
+  describe('un même client lance 5 réservations simultanées', () => {
+    it('sur 5 créneaux différents : la limite de 3 RDV à venir tient malgré la concurrence', async () => {
+      const [patientId] = await seedPatients(ctx.c.pool, 1);
+      const results = await Promise.allSettled(
+        slotIds.slice(0, 5).map((slotId) =>
+          ctx.c.services.booking.book({ patientId: patientId!, slotId, appointmentTypeId: typeId, idempotencyKey: randomUUID(), source: 'mobile' }),
+        ),
+      );
+      const ok = results.filter((r) => r.status === 'fulfilled');
+      const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      expect(ok).toHaveLength(3);
+      expect(refused.map((r) => r.reason.code)).toEqual(['BOOKING_LIMIT_REACHED', 'BOOKING_LIMIT_REACHED']);
+      const { rows } = await ctx.c.pool.query(`SELECT count(*)::int AS n FROM appointments WHERE patient_id = $1`, [patientId]);
+      expect(rows[0].n).toBe(3);
+    });
+
+    it('sur le MÊME créneau (5 clés différents, ex. 5 appareils) : 1 réservation, 4 conflits avec alternatives', async () => {
+      const [patientId] = await seedPatients(ctx.c.pool, 1);
+      const results = await Promise.allSettled(
+        Array.from({ length: 5 }, () =>
+          ctx.c.services.booking.book({ patientId: patientId!, slotId: slotIds[0]!, appointmentTypeId: typeId, idempotencyKey: randomUUID(), source: 'mobile' }),
+        ),
+      );
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      expect(refused).toHaveLength(4);
+      for (const r of refused) {
+        expect(r.reason).toBeInstanceOf(SlotUnavailableError);
+        expect((r.reason as SlotUnavailableError).alternatives.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('via HTTP avec la même session : 3 × 201 puis 2 × 422, sans erreur serveur', async () => {
+      const patient = await registerPatient(ctx.app);
+      const responses = await Promise.all(
+        slotIds.slice(0, 5).map((slotId) =>
+          ctx.app.inject({ method: 'POST', url: '/api/v1/appointments', headers: as(patient), payload: { slotId, appointmentTypeId: typeId, idempotencyKey: randomUUID() } }),
+        ),
+      );
+      expect(responses.map((r) => r.statusCode).sort()).toEqual([201, 201, 201, 422, 422]);
+      const mine = await ctx.app.inject({ method: 'GET', url: '/api/v1/appointments/me', headers: as(patient) });
+      expect(mine.json().data).toHaveLength(3);
+    });
+
+    it('le secrétariat n’est pas soumis à la limite', async () => {
+      const [patientId] = await seedPatients(ctx.c.pool, 1);
+      for (const slotId of slotIds.slice(0, 5)) {
+        await ctx.c.services.booking.book({ patientId: patientId!, slotId, appointmentTypeId: typeId, idempotencyKey: randomUUID(), source: 'desk' });
+      }
+      const { rows } = await ctx.c.pool.query(`SELECT count(*)::int AS n FROM appointments WHERE patient_id = $1`, [patientId]);
+      expect(rows[0].n).toBe(5);
+    });
+  });
+
+  it('jeton encore valide d’un compte supprimé entre-temps → 401 (et non 500), rien n’est créé', async () => {
+    const patient = await registerPatient(ctx.app);
+    await ctx.c.pool.query(`DELETE FROM users WHERE id = $1`, [patient.user.id]);
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/appointments',
+      headers: as(patient),
+      payload: { slotId: slotIds[0], appointmentTypeId: typeId, idempotencyKey: randomUUID() },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().code).toBe('SESSION_INVALID');
+    const { rows } = await ctx.c.pool.query(`SELECT count(*)::int AS n FROM appointments`);
+    expect(rows[0].n).toBe(0); // transaction annulée
+  });
+
+  it('réservation pour un patient inexistant → 404 (et non 500)', async () => {
+    const secretary = await staffSession(ctx, 'secretary');
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/appointments',
+      headers: as(secretary),
+      payload: { slotId: slotIds[0], appointmentTypeId: typeId, idempotencyKey: randomUUID(), patientId: randomUUID() },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
   it('les contraintes SQL bloquent une double réservation même en contournant le service', async () => {
     const [p1, p2] = await seedPatients(ctx.c.pool, 2);
     const insert = (patientId: string, slotId: string | null) =>
@@ -88,7 +168,8 @@ describe('concurrence', () => {
     await insert(p1!, slotIds[0]!);
     // Même créneau : rejeté par l'exclusion (chevauchement) ou l'index unique, selon celle évaluée en premier.
     await expect(insert(p2!, slotIds[0]!)).rejects.toMatchObject({ code: expect.stringMatching(/^(23505|23P01)$/) });
-    await expect(insert(p2!, null)).rejects.toMatchObject({ code: '23P01' }); // walk-in qui chevauche
+    // Un RDV « programmé » sans créneau n'a pas de sens : seule une visite walk-in (déjà arrivée) peut s'en passer.
+    await expect(insert(p2!, null)).rejects.toMatchObject({ code: '23514', constraint: 'ck_appointments_walk_in' });
   });
 
   it('un patient ne peut pas avoir deux RDV qui se chevauchent (médecins différents)', async () => {
