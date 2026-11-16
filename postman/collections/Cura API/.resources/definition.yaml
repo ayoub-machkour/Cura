@@ -1,0 +1,66 @@
+$kind: collection
+name: Cura API
+description: |-
+  Medical appointment management API for the Cura platform.
+
+  **Host:** `{{host}}` — `http://localhost:8080` (Docker + Nginx) or `http://localhost:3000` (`pnpm dev`).
+  **Base URL:** `{{base_url}}` = `{{host}}/api/v1`. Health probes live at the root: `{{host}}/health/...`.
+
+  ## Authentication (httpOnly cookies)
+  The API never returns the access token in a response body: **Login** / **Register** set
+  httpOnly cookies, and Postman's cookie jar sends them automatically on the next requests.
+  Nothing to copy by hand.
+
+  CSRF: every POST / PATCH authenticated by cookie needs the `x-csrf-token` header. The
+  collection-level script adds it automatically from `csrf_token`, saved after Login / Register / Refresh.
+
+  ## Suggested order
+  1. Create the first admin from the terminal: `pnpm --filter @cura/api create-admin`
+  2. **Login** as admin → **Create doctor** → **Create appointment type** → **Generate slots**
+  3. **Register patient** (switches the session to that patient) → **List available slots** →
+     **Hold slot** (optional) → **Book appointment** → **Get my appointments** → **Cancel appointment**
+
+  IDs (`doctor_id`, `appointment_type_id`, `slot_id`, `patient_id`, `appointment_id`) are saved
+  automatically by the requests that create or list them.
+
+  ## Roles
+  | Role | Description |
+  |------|-------------|
+  | `patient` | Mobile app users |
+  | `doctor` | Medical staff |
+  | `secretary` | Front-desk staff |
+  | `admin` | Full access |
+variables:
+  - key: host
+    value: 'http://localhost:8080'
+    description: 'Server root (no trailing slash)'
+  - key: base_url
+    value: '{{host}}/api/v1'
+    description: 'Versioned API root'
+  - key: csrf_token
+    value: ''
+    description: 'Set automatically after Login / Register / Refresh'
+  - key: doctor_id
+    value: ''
+  - key: appointment_type_id
+    value: ''
+  - key: slot_id
+    value: ''
+  - key: patient_id
+    value: ''
+  - key: appointment_id
+    value: ''
+  - key: hold_token
+    value: ''
+    description: 'Set by Hold slot, consumed by Book appointment'
+auth:
+  type: noauth
+scripts:
+  - type: beforeRequest
+    language: text/javascript
+    code: |-
+      // Double-submit CSRF: required on every state-changing request authenticated by cookie.
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(pm.request.method)) {
+        const csrf = pm.collectionVariables.get('csrf_token');
+        if (csrf) pm.request.headers.upsert({ key: 'x-csrf-token', value: csrf });
+      }

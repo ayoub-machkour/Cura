@@ -1,0 +1,8 @@
+$kind: collection
+name: Patients
+description: |-
+  Patient record management.
+
+  - `/patients/me` — patient self-service (mobile app)
+  - `/patients` and `/patients/:id` — staff-only (admin, doctor, secretary)
+order: 4000

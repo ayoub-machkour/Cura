@@ -1,0 +1,8 @@
+$kind: collection
+name: Auth
+description: |-
+  Authentication endpoints — register, login, refresh, logout, and user info.
+  Sessions use httpOnly cookies handled by Postman's cookie jar; `csrf_token` is saved
+  automatically from the `csrfToken` field of Login / Register / Refresh responses.
+  The first admin account is created from the terminal: `pnpm --filter @cura/api create-admin`.
+order: 2000

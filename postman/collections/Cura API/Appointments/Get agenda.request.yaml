@@ -1,0 +1,29 @@
+$kind: http-request
+name: 'Get agenda (staff)'
+method: GET
+url: '{{base_url}}/appointments?doctorId={{doctor_id}}&from={{range_from}}&to={{range_to}}&limit=20'
+order: 5000
+queryParams:
+  - key: doctorId
+    value: '{{doctor_id}}'
+    description: 'Doctor UUID (required)'
+  - key: from
+    value: '{{range_from}}'
+    description: 'ISO 8601 datetime — set to now by the pre-request script (UTC "Z" format: a "+" offset would be decoded as a space)'
+  - key: to
+    value: '{{range_to}}'
+    description: 'ISO 8601 datetime — now + 60 days'
+  - key: limit
+    value: '20'
+    description: 'Number of results per page (1–100, default 20)'
+  - key: cursor
+    value: ''
+    description: 'Pagination cursor (page.nextCursor of the previous response)'
+    disabled: true
+scripts:
+  - type: beforeRequest
+    language: text/javascript
+    code: |-
+      const now = new Date();
+      pm.variables.set('range_from', now.toISOString());
+      pm.variables.set('range_to', new Date(now.getTime() + 60 * 86400000).toISOString());

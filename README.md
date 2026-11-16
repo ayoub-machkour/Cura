@@ -162,14 +162,16 @@ pnpm --filter @cura/api test         # unitaires + intégration
 pnpm --filter @cura/api test:unit    # sans Docker
 ```
 
-161 tests, dont :
+220 tests (97 % des lignes couvertes, `pnpm --filter @cura/api test:coverage`), dont :
 - 50 réservations simultanées sur le même créneau : exactement 1 gagnant ;
 - rejeu idempotent ;
 - rotation et vol de refresh token ;
 - CSRF, RBAC, XSS, rate limiting, en-têtes de sécurité ;
 - pagination sur 45 patients sans doublon ;
 - contrat Zod ⇄ PostgreSQL ;
-- réversibilité des migrations et détection de modification.
+- réversibilité des migrations et détection de modification ;
+- chaque route testée pour chaque rôle et chaque règle métier (créneau bloqué, délai de prévenance, motif trop long…) ;
+- résilience : base indisponible (500 sans fuite, health 503), verrou bloqué (409 au lieu d’une attente infinie).
 
 ## Feuille de route
 
@@ -178,3 +180,13 @@ pnpm --filter @cura/api test:unit    # sans Docker
 - [ ] Rappels J-1 / H-2 (BullMQ sur Redis + Expo Push)
 - [ ] Application cabinet (React + Vite) et application mobile (Expo)
 - [ ] CI GitHub Actions (tests sur conteneurs de service)
+
+## Postman
+
+La collection [`postman/collections/Cura API`](postman/collections/Cura%20API) couvre toutes les routes.
+- La session passe par le gestionnaire de cookies de Postman : rien à copier à la main.
+- Le jeton CSRF est ajouté automatiquement aux requêtes POST/PATCH.
+- Les identifiants (`doctor_id`, `slot_id`…) sont enregistrés par les requêtes qui les créent.
+
+Ordre conseillé : `create-admin` (terminal) → Login → Create doctor → Create appointment type → Generate slots →
+Register patient → List available slots → Book appointment.

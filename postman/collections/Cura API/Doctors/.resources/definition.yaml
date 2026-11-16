@@ -1,0 +1,6 @@
+$kind: collection
+name: Doctors
+description: |-
+  Manage doctors. Listing and fetching require authentication.
+  Creating a doctor requires the `admin` role.
+order: 3000

@@ -1,0 +1,23 @@
+$kind: http-request
+name: 'Create doctor (admin)'
+method: POST
+url: '{{base_url}}/doctors'
+order: 3000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "firstName": "Ahmed",
+      "lastName": "Benali",
+      "specialty": "Cardiology",
+      "registrationNumber": "MED-12345",
+      "timezone": "Africa/Casablanca"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) pm.collectionVariables.set('doctor_id', pm.response.json().id);

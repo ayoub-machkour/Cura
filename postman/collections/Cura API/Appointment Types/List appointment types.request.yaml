@@ -1,0 +1,11 @@
+$kind: http-request
+name: 'List appointment types'
+method: GET
+url: '{{base_url}}/appointment-types'
+order: 1000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      const res = pm.response.json();
+      if (pm.response.code === 200 && res.data.length > 0 && !pm.collectionVariables.get('appointment_type_id')) pm.collectionVariables.set('appointment_type_id', res.data[0].id);

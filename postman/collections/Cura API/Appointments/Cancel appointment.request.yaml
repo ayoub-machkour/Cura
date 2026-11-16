@@ -1,0 +1,18 @@
+$kind: http-request
+name: 'Cancel appointment'
+method: POST
+url: '{{base_url}}/appointments/:id/cancel'
+order: 3000
+pathVariables:
+  - key: id
+    value: '{{appointment_id}}'
+    description: 'Appointment UUID'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "reason": "Patient request"
+    }

@@ -1,0 +1,27 @@
+$kind: http-request
+name: 'Hold slot (patient)'
+method: POST
+url: '{{base_url}}/slots/:slotId/hold'
+order: 1000
+pathVariables:
+  - key: slotId
+    value: '{{slot_id}}'
+    description: 'Slot UUID to pre-reserve'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "appointmentTypeId": "{{appointment_type_id}}"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 200) {
+        const res = pm.response.json();
+        pm.collectionVariables.set('hold_token', res.holdToken);
+        console.log('Hold token set, expires at:', res.expiresAt);
+      }

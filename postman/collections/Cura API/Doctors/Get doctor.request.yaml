@@ -1,0 +1,9 @@
+$kind: http-request
+name: 'Get doctor'
+method: GET
+url: '{{base_url}}/doctors/:id'
+order: 2000
+pathVariables:
+  - key: id
+    value: '{{doctor_id}}'
+    description: 'Doctor UUID'

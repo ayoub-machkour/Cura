@@ -152,7 +152,86 @@ describe('refresh token', () => {
   });
 });
 
+describe('cas limites de session', () => {
+  it('un compte désactivé ne peut ni se connecter ni rafraîchir sa session', async () => {
+    const s = await registerPatient(ctx.app, { email: 'off@cura.test' });
+    await ctx.c.pool.query(`UPDATE users SET is_active = false WHERE email = 'off@cura.test'`);
+    const res = await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: 'off@cura.test', password: PASSWORD } });
+    expect(res.statusCode).toBe(401);
+    expect(res.json().code).toBe('INVALID_CREDENTIALS');
+    expect((await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/refresh', headers: as(s) })).statusCode).toBe(401);
+  });
+
+  it('refresh token expiré → 401 et cookies effacés', async () => {
+    const s = await registerPatient(ctx.app);
+    await ctx.c.pool.query(`UPDATE refresh_tokens SET created_at = now() - interval '40 days', expires_at = now() - interval '1 second'`);
+    const res = await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/refresh', headers: as(s) });
+    expect(res.statusCode).toBe(401);
+    expect(res.cookies.find((c) => c.name === COOKIE.access)?.value).toBe('');
+  });
+
+  it('refresh sans cookie de refresh → 401 ; jeton inconnu → 401', async () => {
+    const s = await registerPatient(ctx.app);
+    const noRefresh = { cookie: `${COOKIE.csrf}=${s.csrf}`, 'x-csrf-token': s.csrf };
+    expect((await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/refresh', headers: noRefresh })).statusCode).toBe(401);
+    const forged = { cookie: `${COOKIE.refresh}=forged-token; ${COOKIE.csrf}=${s.csrf}`, 'x-csrf-token': s.csrf };
+    expect((await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/refresh', headers: forged })).statusCode).toBe(401);
+  });
+
+  it('logout sans jeton CSRF → 403 ; logout sans session (avec CSRF) → 204 idempotent', async () => {
+    const s = await registerPatient(ctx.app);
+    expect((await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: { cookie: as(s).cookie! } })).statusCode).toBe(403);
+    const anonymous = { cookie: `${COOKIE.csrf}=abc`, 'x-csrf-token': 'abc' };
+    expect((await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: anonymous })).statusCode).toBe(204);
+  });
+
+  it('login : 400 si le corps est invalide', async () => {
+    expect((await ctx.app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: 'pas-un-email' } })).statusCode).toBe(400);
+  });
+
+  it('les paramètres de hachage obsolètes sont mis à niveau à la connexion', async () => {
+    await registerPatient(ctx.app, { email: 'rehash@cura.test' });
+    const strong = await createTestContext({}, { hasher: new (await import('../../src/common/security/password-hasher')).ScryptPasswordHasher({ N: 2 ** 11, r: 8, p: 1 }) });
+    try {
+      await login(strong.app, 'rehash@cura.test');
+      const { rows } = await ctx.c.pool.query(`SELECT password_hash FROM users WHERE email = 'rehash@cura.test'`);
+      expect(rows[0].password_hash).toMatch(/^scrypt\$2048\$/);
+    } finally {
+      await strong.close();
+    }
+  });
+});
+
 describe('comptes du personnel (RBAC)', () => {
+  it('compte médecin : lié à un médecin existant, une seule fois', async () => {
+    const admin = await staffSession(ctx, 'admin');
+    const { rows } = await ctx.c.pool.query(
+      `INSERT INTO doctors (first_name, last_name, specialty, registration_number) VALUES ('Karim', 'Alaoui', 'Cardiologie', 'MED-9') RETURNING id`,
+    );
+    const create = (email: string, doctorId: string) =>
+      ctx.app.inject({ method: 'POST', url: '/api/v1/users', headers: as(admin), payload: { email, password: PASSWORD, role: 'doctor', doctorId } });
+
+    const ok = await create('dr@cura.test', rows[0].id);
+    expect(ok.statusCode).toBe(201);
+    expect(ok.json().doctorId).toBe(rows[0].id);
+
+    const twice = await create('dr2@cura.test', rows[0].id);
+    expect(twice.statusCode).toBe(409);
+    expect(twice.json().code).toBe('DOCTOR_ALREADY_LINKED');
+
+    const unknown = await create('dr3@cura.test', '3f1c2a6e-8b4d-4c1a-9e2f-1a2b3c4d5e6f');
+    expect(unknown.statusCode).toBe(422);
+    expect(unknown.json().code).toBe('DOCTOR_NOT_FOUND');
+
+    const dupEmail = await create('dr@cura.test', rows[0].id);
+    expect(dupEmail.statusCode).toBe(409);
+
+    // Le médecin connecté accède aux dossiers patients.
+    const doctor = await login(ctx.app, 'dr@cura.test');
+    expect((await ctx.app.inject({ method: 'GET', url: '/api/v1/patients', headers: as(doctor) })).statusCode).toBe(200);
+  });
+
+
   it('seul un admin peut créer un compte du personnel', async () => {
     const admin = await staffSession(ctx, 'admin');
     const secretary = await staffSession(ctx, 'secretary');

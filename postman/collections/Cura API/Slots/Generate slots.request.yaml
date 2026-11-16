@@ -1,0 +1,24 @@
+$kind: http-request
+name: 'Generate slots (admin/secretary)'
+method: POST
+url: '{{base_url}}/doctors/:doctorId/slots/generate'
+order: 2000
+pathVariables:
+  - key: doctorId
+    value: '{{doctor_id}}'
+    description: 'Doctor UUID'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "from": "2026-12-01",
+      "to": "2026-12-31",
+      "weekdays": [1, 2, 3, 4, 5],
+      "dayStart": "08:00",
+      "dayEnd": "17:00",
+      "slotMinutes": 30,
+      "onlineBookable": true
+    }

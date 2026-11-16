@@ -1,0 +1,43 @@
+$kind: http-request
+name: 'Book appointment'
+description: |-
+  201 = created · 200 = idempotent replay (same idempotencyKey) · 409 = slot taken, `alternatives` lists the closest free slots.
+  Staff (secretary/admin/doctor) must add "patientId": "{{patient_id}}" to the body.
+method: POST
+url: '{{base_url}}/appointments'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "slotId": "{{slot_id}}",
+      "appointmentTypeId": "{{appointment_type_id}}",
+      "idempotencyKey": "{{$randomUUID}}",
+      "holdToken": "{{hold_token}}",
+      "note": "First visit"
+    }
+scripts:
+  - type: beforeRequest
+    language: text/javascript
+    code: |-
+      // holdToken is optional: drop it when no slot was held (an empty string is rejected by validation).
+      if (!pm.collectionVariables.get('hold_token')) {
+        const body = JSON.parse(pm.request.body.raw);
+        delete body.holdToken;
+        pm.request.body.update(JSON.stringify(body, null, 2));
+      }
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.collectionVariables.set('hold_token', ''); // a hold is single-use
+      const res = pm.response.json();
+      if (pm.response.code === 200 || pm.response.code === 201) {
+        pm.collectionVariables.set('appointment_id', res.id);
+        console.log('Appointment ID:', res.id, '| status:', res.status);
+      } else if (pm.response.code === 409 && res.alternatives) {
+        console.log('Slot unavailable (' + res.reason + '). Closest alternatives:', res.alternatives.map((s) => s.startsAt));
+        if (res.alternatives[0]) pm.collectionVariables.set('slot_id', res.alternatives[0].id);
+      }

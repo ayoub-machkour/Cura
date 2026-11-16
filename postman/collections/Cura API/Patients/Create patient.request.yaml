@@ -1,0 +1,25 @@
+$kind: http-request
+name: 'Create patient (staff)'
+method: POST
+url: '{{base_url}}/patients'
+order: 4000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "firstName": "Fatima",
+      "lastName": "Zahra",
+      "birthDate": "1985-03-20",
+      "sex": "F",
+      "phone": "+212600000003",
+      "email": "fatima.zahra@example.com",
+      "nationalId": "AB123456"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) pm.collectionVariables.set('patient_id', pm.response.json().id);

@@ -1,0 +1,20 @@
+$kind: http-request
+name: 'Update patient (staff)'
+method: PATCH
+url: '{{base_url}}/patients/:id'
+order: 6000
+pathVariables:
+  - key: id
+    value: '{{patient_id}}'
+    description: 'Patient UUID'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "phone": "+212600000099",
+      "email": "updated@example.com",
+      "nationalId": "CD789012"
+    }

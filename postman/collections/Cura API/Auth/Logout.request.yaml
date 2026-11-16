@@ -1,0 +1,8 @@
+$kind: http-request
+name: Logout
+method: POST
+url: '{{base_url}}/auth/logout'
+order: 4000
+headers:
+  - key: x-csrf-token
+    value: '{{csrf_token}}'

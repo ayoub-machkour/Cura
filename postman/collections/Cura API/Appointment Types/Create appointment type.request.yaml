@@ -1,0 +1,24 @@
+$kind: http-request
+name: 'Create appointment type (admin)'
+method: POST
+url: '{{base_url}}/appointment-types'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "code": "CONSULT_GEN",
+      "label": "General Consultation",
+      "durationMinutes": 30,
+      "colorHex": "#2563EB",
+      "bookableOnline": true,
+      "defaultPriceCents": 15000
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) pm.collectionVariables.set('appointment_type_id', pm.response.json().id);

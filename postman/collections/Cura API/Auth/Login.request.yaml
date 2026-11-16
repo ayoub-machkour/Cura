@@ -1,0 +1,27 @@
+$kind: http-request
+name: Login
+method: POST
+url: '{{base_url}}/auth/login'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "email": "admin@cura.local",
+      "password": "change-me-with-ADMIN_PASSWORD-from-.env"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      const res = pm.response.json();
+      if (res.csrfToken) {
+        pm.collectionVariables.set('csrf_token', res.csrfToken);
+      }
+      if (res.user) {
+        if (res.user.patientId) pm.collectionVariables.set('patient_id', res.user.patientId);
+        console.log('Logged in as:', res.user.email, '| role:', res.user.role);
+      }

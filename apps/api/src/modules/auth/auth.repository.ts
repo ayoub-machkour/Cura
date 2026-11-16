@@ -5,7 +5,7 @@
  */
 import type { Pool } from 'pg';
 import type { UserRole } from '@cura/shared';
-import { ConflictError } from '../../common/errors';
+import { BusinessRuleError, ConflictError } from '../../common/errors';
 import { type Db, isConstraintViolation } from '../../infra/db/transaction';
 
 export interface UserRecord {
@@ -74,7 +74,7 @@ export class AuthRepository {
         throw new ConflictError('DOCTOR_ALREADY_LINKED', 'Ce médecin possède déjà un compte');
       }
       if (isConstraintViolation(err, 'users_doctor_id_fkey')) {
-        throw new ConflictError('DOCTOR_NOT_FOUND', 'Médecin introuvable');
+        throw new BusinessRuleError('DOCTOR_NOT_FOUND', 'Le médecin indiqué n’existe pas');
       }
       throw err;
     }

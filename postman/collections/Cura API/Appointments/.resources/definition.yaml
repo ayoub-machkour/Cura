@@ -1,0 +1,14 @@
+$kind: collection
+name: Appointments
+description: |-
+  Appointment booking, cancellation, and agenda management.
+
+  **Booking flow:**
+  1. (Optional) `POST /slots/:slotId/hold` — pre-reserve a slot while the patient fills the form (returns a `holdToken` valid for a short TTL).
+  2. `POST /appointments` — confirm the booking. Pass the `holdToken` if obtained in step 1. Use a stable `idempotencyKey` (UUID) to safely retry on network errors.
+  3. `POST /appointments/:id/cancel` — cancel if needed.
+
+  **Listing:**
+  - Patients use `GET /appointments/me` to see their own appointments.
+  - Staff use `GET /appointments` (agenda view, filtered by doctor and date range).
+order: 7000

@@ -1,0 +1,19 @@
+$kind: http-request
+name: 'List doctors'
+method: GET
+url: '{{base_url}}/doctors?limit=20'
+order: 1000
+queryParams:
+  - key: limit
+    value: '20'
+    description: 'Number of results per page (1–100, default 20)'
+  - key: cursor
+    value: ''
+    description: 'Pagination cursor from previous response'
+    disabled: true
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      const res = pm.response.json();
+      if (pm.response.code === 200 && res.data.length > 0 && !pm.collectionVariables.get('doctor_id')) pm.collectionVariables.set('doctor_id', res.data[0].id);

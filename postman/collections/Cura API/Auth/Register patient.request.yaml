@@ -1,0 +1,29 @@
+$kind: http-request
+name: 'Register patient'
+method: POST
+url: '{{base_url}}/auth/register'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "email": "patient@example.com",
+      "password": "StrongPassword123!",
+      "firstName": "Jane",
+      "lastName": "Doe",
+      "birthDate": "1990-05-15",
+      "phone": "+212600000001"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      if (pm.response.code === 201) {
+        const res = pm.response.json();
+        pm.collectionVariables.set('csrf_token', res.csrfToken);
+        pm.collectionVariables.set('patient_id', res.user.patientId);
+        console.log('Registered and logged in as patient:', res.user.email);
+      }

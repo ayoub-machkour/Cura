@@ -1,0 +1,16 @@
+$kind: http-request
+name: 'Get my appointments (patient)'
+method: GET
+url: '{{base_url}}/appointments/me?scope=upcoming&limit=20'
+order: 4000
+queryParams:
+  - key: scope
+    value: upcoming
+    description: "'upcoming' or 'past'"
+  - key: limit
+    value: '20'
+    description: 'Number of results per page (1–100, default 20)'
+  - key: cursor
+    value: ''
+    description: 'Pagination cursor'
+    disabled: true

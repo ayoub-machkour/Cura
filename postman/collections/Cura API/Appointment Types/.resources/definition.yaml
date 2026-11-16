@@ -1,0 +1,6 @@
+$kind: collection
+name: Appointment Types
+description: |-
+  Consultation type (motif) management.
+  Listing requires authentication. Creating and updating require the `admin` role.
+order: 5000

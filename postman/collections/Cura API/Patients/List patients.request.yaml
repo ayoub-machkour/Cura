@@ -1,0 +1,17 @@
+$kind: http-request
+name: 'List patients (staff)'
+method: GET
+url: '{{base_url}}/patients?limit=20'
+order: 3000
+queryParams:
+  - key: limit
+    value: '20'
+    description: 'Number of results per page (1–100, default 20)'
+  - key: cursor
+    value: ''
+    description: 'Pagination cursor from previous response'
+    disabled: true
+  - key: q
+    value: ''
+    description: 'Search query (min 2 chars) — filters by name'
+    disabled: true

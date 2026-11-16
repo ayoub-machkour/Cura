@@ -1,0 +1,7 @@
+$kind: collection
+name: Slots
+description: |-
+  Doctor availability slot management.
+  - Listing available slots requires authentication (any role).
+  - Generating slots requires `admin` or `secretary` role.
+order: 6000

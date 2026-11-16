@@ -1,0 +1,5 @@
+$kind: http-request
+name: 'Readiness probe'
+method: GET
+url: '{{host}}/health/ready'
+order: 2000

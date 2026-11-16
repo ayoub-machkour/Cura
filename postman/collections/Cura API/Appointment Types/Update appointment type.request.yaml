@@ -1,0 +1,21 @@
+$kind: http-request
+name: 'Update appointment type (admin)'
+description: 'PATCH: send only the fields to change. Changing durationMinutes above the slot length makes those slots unbookable for this type.'
+method: PATCH
+url: '{{base_url}}/appointment-types/:id'
+order: 3000
+pathVariables:
+  - key: id
+    value: '{{appointment_type_id}}'
+    description: 'Appointment type UUID'
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "label": "General Consultation (Updated)",
+      "colorHex": "#16A34A",
+      "defaultPriceCents": 20000
+    }

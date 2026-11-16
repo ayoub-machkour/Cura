@@ -18,6 +18,13 @@ export default defineConfig({
     env,
     // Une seule base de test partagée : les fichiers s'exécutent l'un après l'autre.
     fileParallelism: false,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      // Points d'entrée CLI (démarrage du process) : vérifiés par le smoke test Docker, pas par les tests.
+      exclude: ['src/main.ts', 'src/migrate.ts', 'src/create-admin.ts'],
+      reporter: ['text-summary', 'text'],
+    },
     projects: [
       {
         extends: true,
