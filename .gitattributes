@@ -1,0 +1,6 @@
+# Fins de ligne LF partout : les scripts et configs montés dans les conteneurs
+# Linux cassent avec CRLF, et les checksums de migrations restent stables.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
